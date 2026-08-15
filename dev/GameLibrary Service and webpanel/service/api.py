@@ -49,6 +49,17 @@ def create_app(db, metadata=None):
             "artwork_queue": metadata._queue.qsize() if metadata else 0
         }
 
+    @app.get("/api/drives")
+    def drives():
+        with db.lock:
+            rows = db.conn.execute("""
+                SELECT id,uuid,name,description,last_letter,connected,last_seen
+                FROM drives
+                WHERE connected=1
+                ORDER BY name COLLATE NOCASE
+            """).fetchall()
+        return [dict(row) for row in rows]
+
     @app.get("/api/games")
     def games(q: str = Query("", max_length=200), connected_only: bool = False):
         rows = db.search(q, connected_only)
