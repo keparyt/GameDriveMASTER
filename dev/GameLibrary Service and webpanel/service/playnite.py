@@ -21,6 +21,7 @@ class PlayniteBridge:
     """
 
     API_URL = "http://127.0.0.1:38123"
+    API_CACHE_SECONDS = 2.0
 
     def __init__(self, config=None):
         self.config = config or {}
@@ -43,6 +44,8 @@ class PlayniteBridge:
         self._last_error = None
         self._startup_attempted = False
         self._restart_attempted = False
+        self._api_available = False
+        self._api_checked_at = 0.0
 
     def _path(self, value):
         if not value:
@@ -75,31 +78,57 @@ class PlayniteBridge:
                 return p
         return None
 
-    @property
-    def available(self):
+    def _probe_api(self, timeout=1.0):
+        """Probe the Playnite API without making status/health callers block."""
         if not self.enabled:
+            with self._lock:
+                self._api_available = False
+                self._api_checked_at = time.monotonic()
             return False
         try:
-            response = self._request("/health", timeout=1.5)
-            return (
+            response = self._request("/health", timeout=timeout)
+            # Older GameDrive Playnite DLLs only return ok/source. Newer ones
+            # also return ready. Accept the old response as ready once the
+            # authoritative Playnite API endpoint is responding, so updating
+            # the Python service does not make an older installed DLL unusable.
+            ready = response.get("ready", True)
+            available = (
                 bool(response.get("ok"))
                 and response.get("source") == "PlayniteApi.Database.Games"
-                and bool(response.get("ready"))
+                and bool(ready)
             )
-        except Exception:
+            with self._lock:
+                self._api_available = available
+                self._api_checked_at = time.monotonic()
+            return available
+        except Exception as exc:
+            with self._lock:
+                self._api_available = False
+                self._api_checked_at = time.monotonic()
             return False
 
     @property
+    def available(self):
+        # This property is called by /api/health, which the tray polls every
+        # ~0.5s. Never perform a network request here: a dead Playnite plugin
+        # must not make the Game Library health endpoint itself time out.
+        with self._lock:
+            return self._api_available
+
+    @property
     def status(self):
+        with self._lock:
+            available = self._api_available
+            game_count = len(self._games)
         return {
             "enabled": self.enabled,
-            "available": self.available,
+            "available": available,
             "playnite_path": str(self.playnite_path) if self.playnite_path else None,
             "library_path": str(self.library_path) if self.library_path else None,
             "library_source": "PlayniteApi.Database.Games",
             "last_refresh": self._last_refresh,
             "error": self._last_error,
-            "game_count": len(self._games),
+            "game_count": game_count,
         }
 
     def _request(self, path, timeout=10):
@@ -157,12 +186,7 @@ class PlayniteBridge:
             return False
 
     def restart(self):
-        """Restart Playnite once when an existing instance has no GameDrive API.
-
-        This is important after installing/replacing the GameDrive DLL: an
-        already-running Playnite process keeps the old extension set until it
-        is restarted.
-        """
+        """Restart Playnite once when an existing instance has no GameDrive API."""
         if not self.enabled or not self.restart_if_api_unavailable:
             return False
         if self._restart_attempted:
@@ -200,7 +224,7 @@ class PlayniteBridge:
             return True
         deadline = time.monotonic() + max(0, timeout)
         while time.monotonic() < deadline:
-            if self.available:
+            if self._probe_api(timeout=1.0):
                 return True
             time.sleep(0.25)
         log.warning("Playnite process started, but GameDrive Playnite API is not ready yet")
@@ -217,8 +241,6 @@ class PlayniteBridge:
     def _parse(self, game):
         if not isinstance(game, dict):
             return None
-        # The plugin filters to IsInstalled games. Keep this second guard so
-        # an endpoint regression can never leak uninstalled games to the UI.
         if not bool(game.get("isInstalled", False)):
             return None
         gid = str(game.get("id") or "")
@@ -254,6 +276,7 @@ class PlayniteBridge:
                 log.info("Playnite API library read: %d installed game(s)", len(games))
                 return list(games)
             except Exception as e:
+                self._probe_api(timeout=0.5)
                 if self._ensure_started():
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
@@ -318,30 +341,23 @@ class PlayniteBridge:
                 u.PostMessageW(hwnd, 0x0100, 0x74, 0)
                 u.PostMessageW(hwnd, 0x0101, 0x74, 0)
                 time.sleep(0.75)
-            self.read_games(force=True)
-            return True
+                self._probe_api(timeout=1.0)
+                return True
         except Exception as e:
             self._last_error = str(e)
-            log.warning("Playnite refresh failed: %s", e)
-            self.read_games(force=True)
-            return False
-
-    def launch(self, playnite_id):
-        if not self.enabled or not self.playnite_path or not self.playnite_path.is_file():
-            return {"ok": False, "error": "playnite_unavailable"}
-        try:
-            if not self._is_running():
-                if not self._ensure_started():
-                    return {"ok": False, "error": "playnite_start_failed"}
-                time.sleep(0.5)
-            subprocess.Popen(
-                [str(self.playnite_path), "--start", str(playnite_id)],
-                cwd=str(self.playnite_path.parent),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            return {"ok": True, "playnite_id": str(playnite_id)}
-        except Exception as e:
-            return {"ok": False, "error": "playnite_launch_failed", "detail": str(e)}
+            log.warning("Could not refresh Playnite library: %s", e)
+        return False
 
     def uri(self, playnite_id):
-        return "playnite://playnite/start/" + quote(str(playnite_id), safe="")
+        return "playnite://playnite/" + quote(str(playnite_id), safe="")
+
+    def launch(self, playnite_id):
+        if not self.enabled:
+            return {"ok": False, "error": "playnite_disabled"}
+        try:
+            self._ensure_started()
+            data = self._request("/games/" + quote(str(playnite_id), safe="") + "/launch", timeout=10)
+            return data if isinstance(data, dict) else {"ok": True}
+        except Exception as e:
+            self._last_error = str(e)
+            return {"ok": False, "error": "playnite_launch_failed", "detail": str(e)}
