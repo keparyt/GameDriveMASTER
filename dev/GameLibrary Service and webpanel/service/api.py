@@ -14,50 +14,37 @@ ARTWORK_DIR = BASE_DIR / "data" / "images"
 
 
 def _physical_disks():
-    """Return physical disks currently detected by Windows.
-
-    This is intentionally independent from GameDrive detection: NVMe, SATA,
-    USB, virtual, and other disks visible to Windows are included.
-    """
+    """Return physical disks currently detected by Windows."""
     if not hasattr(ctypes, "windll"):
         return []
-
     command = (
         "Get-Disk -ErrorAction SilentlyContinue | "
         "Select-Object Number,FriendlyName,SerialNumber,BusType,MediaType,Size,"
-        "OperationalStatus,HealthStatus,IsOffline,IsReadOnly | "
-        "ConvertTo-Json -Compress"
+        "OperationalStatus,HealthStatus,IsOffline,IsReadOnly | ConvertTo-Json -Compress"
     )
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output=True, text=True, timeout=5,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0 or not result.stdout.strip():
             return []
-
         data = json.loads(result.stdout)
         if isinstance(data, dict):
             data = [data]
-
-        disks = []
-        for disk in data:
-            disks.append({
-                "number": disk.get("Number"),
-                "name": disk.get("FriendlyName") or "Unknown disk",
-                "serial": disk.get("SerialNumber") or "",
-                "bus": disk.get("BusType") or "Unknown",
-                "media": disk.get("MediaType") or "Unknown",
-                "size": int(disk.get("Size") or 0),
-                "status": disk.get("OperationalStatus") or "Unknown",
-                "health": disk.get("HealthStatus") or "Unknown",
-                "offline": bool(disk.get("IsOffline")),
-                "readonly": bool(disk.get("IsReadOnly")),
-            })
-        return disks
+        return [{
+            "number": disk.get("Number"),
+            "name": disk.get("FriendlyName") or "Unknown disk",
+            "serial": disk.get("SerialNumber") or "",
+            "bus": disk.get("BusType") or "Unknown",
+            "media": disk.get("MediaType") or "Unknown",
+            "size": int(disk.get("Size") or 0),
+            "status": disk.get("OperationalStatus") or "Unknown",
+            "health": disk.get("HealthStatus") or "Unknown",
+            "offline": bool(disk.get("IsOffline")),
+            "readonly": bool(disk.get("IsReadOnly")),
+        } for disk in data]
     except Exception:
         return []
 
@@ -103,12 +90,13 @@ def create_app(db, metadata=None):
 
     @app.get("/api/drives")
     def drives():
+        # Keep every known collection visible. A disconnected drive should
+        # disappear from the CONNECTED state, not from the user's library.
         with db.lock:
             rows = db.conn.execute("""
                 SELECT id,uuid,name,description,last_letter,connected,last_seen
                 FROM drives
-                WHERE connected=1
-                ORDER BY name COLLATE NOCASE
+                ORDER BY connected DESC, name COLLATE NOCASE
             """).fetchall()
         return [dict(row) for row in rows]
 
