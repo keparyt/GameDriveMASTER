@@ -127,18 +127,24 @@ class Scanner:
         self.config = config
 
     def scan_drive(self, drive):
+        """Inspect one logical drive without inferring offline from partial data."""
         root = Path(drive)
         config_file = root / self.config["config_file"]
+
+        # Missing/inaccessible config is not proof that the drive is offline.
+        # The drive may be busy, partially mounted, or temporarily inaccessible.
         if not config_file.is_file():
-            return False
+            log.debug("GameDrive config unavailable on %s; preserving previous state", drive)
+            return None
+
         info = read_ini(config_file)
         if not info:
-            return False
+            return None
 
         uid = drive_id(drive)
         if not uid:
-            log.warning("Could not identify drive partition %s", drive)
-            return False
+            log.warning("Could not identify drive partition %s; preserving previous state", drive)
+            return None
 
         legacy_uid = legacy_drive_id(drive)
         log.debug("Partition identity: letter=%s identity=%s", drive[0], uid)
@@ -149,34 +155,78 @@ class Scanner:
             drive[0],
             legacy_uuid=legacy_uid,
         )
+
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
-            log.warning("Game folder unavailable on %s; keeping existing indexed games", drive)
-            return True
+            log.warning("Game folder unavailable on %s; drive is online but game scan is incomplete", drive)
+            return {"drive_id": drive_id_value, "complete": False, "seen_paths": set()}
 
-        seen_paths = set()
+        # Build the entire result in memory first. Missing games are only
+        # committed after iteration finishes without an OSError.
+        games = []
         try:
             for item in games_root.iterdir():
                 if not item.is_dir() or not item.name.strip():
                     continue
-                relative_path = item.relative_to(root).as_posix()
-                seen_paths.add(relative_path)
-                self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
+                games.append({
+                    "name": item.name.strip(),
+                    "relative_path": item.relative_to(root).as_posix(),
+                })
         except OSError as exc:
-            log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
-            return True
+            log.warning("Cannot fully scan %s; preserving existing games: %s", games_root, exc)
+            return {"drive_id": drive_id_value, "complete": False, "seen_paths": set()}
 
-        log.debug("Scan indexed %d game folders on %s; existing library entries preserved", len(seen_paths), drive)
-        return True
+        self.db.apply_complete_scan(drive_id_value, games)
+        log.debug("Complete scan indexed %d game folders on %s", len(games), drive)
+        return {
+            "drive_id": drive_id_value,
+            "uuid": uid,
+            "complete": True,
+            "seen_paths": {item["relative_path"] for item in games},
+        }
 
     def scan(self):
-        self.db.mark_disconnected()
+        """Run a scan without resetting all known drives to OFFLINE first.
+
+        A drive becomes OFFLINE only when its previously known logical drive
+        letter is absent from the OS drive set and the drive was not positively
+        rediscovered under another letter during this scan. Scan errors,
+        missing folders, and incomplete results preserve the previous state.
+        """
+        # On non-Windows there is no authoritative logical-drive signal, so a
+        # scan must never mass-mark the database offline.
+        if not hasattr(ctypes, "windll"):
+            log.debug("Logical drive detection unavailable; skipping availability transitions")
+            return 0
+
+        drives = drive_letters()
+        drive_set = {drive.upper() for drive in drives}
+        known = self.db.get_drives()
+        rediscovered_ids = set()
         found = 0
-        for drive in drive_letters():
+
+        for drive in drives:
             try:
-                if self.scan_drive(drive):
+                result = self.scan_drive(drive)
+                if result:
                     found += 1
+                    if result.get("uuid"):
+                        rediscovered_ids.add(result["uuid"])
             except Exception:
-                log.exception("Error scanning %s", drive)
+                # A scanner exception is not reliable evidence of a disconnect.
+                log.exception("Error scanning %s; preserving previous availability state", drive)
+
+        # The only offline transition here is based on explicit OS evidence:
+        # the known drive letter is no longer present. If the same partition
+        # was found under a different letter, it remains online.
+        for row in known:
+            letter = row["last_letter"]
+            if not letter or str(letter).upper() in drive_set:
+                continue
+            if row["uuid"] in rediscovered_ids:
+                continue
+            if self.db.mark_drive_offline(row["id"]):
+                log.info("Confirmed GameDrive offline: %s (%s:)", row["name"], letter)
+
         log.info("Scan finished: %d GameDrive partition(s) online", found)
         return found
