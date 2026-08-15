@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pystray>=0.19
+Pillow>=10.0
+requests>=2.32

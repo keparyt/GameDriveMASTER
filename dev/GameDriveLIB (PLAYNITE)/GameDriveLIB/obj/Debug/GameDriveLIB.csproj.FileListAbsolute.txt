@@ -1,0 +1,12 @@
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\GameDriveLIB.dll
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\GameDriveLIB.pdb
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\INIFileParser.dll
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\Playnite.SDK.dll
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\INIFileParser.xml
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\Playnite.SDK.pdb
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\bin\Debug\Playnite.SDK.xml
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\obj\Debug\GameDriveLIB.csproj.AssemblyReference.cache
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\obj\Debug\GameDriveLIB.csproj.CoreCompileInputs.cache
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\obj\Debug\GameDriv.7AD1A81D.Up2Date
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\obj\Debug\GameDriveLIB.dll
+C:\Users\Kepar\OneDrive\Bureau\Playnite\Extensions\GameDriveLIB\GameDriveLIB\obj\Debug\GameDriveLIB.pdb

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Home LAN Connection</title>
+
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #111827;
+            color: white;
+
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
+        }
+
+        .card {
+            width: min(90%, 500px);
+
+            padding: 40px;
+
+            background: #1f2937;
+            border-radius: 16px;
+
+            text-align: center;
+
+            box-shadow:
+                0 20px 50px rgba(0, 0, 0, 0.4);
+        }
+
+        .icon {
+            font-size: 60px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        #status {
+            margin-top: 25px;
+            padding: 15px;
+
+            border-radius: 10px;
+
+            background: #374151;
+        }
+
+        .connected {
+            background: #064e3b !important;
+        }
+
+        .error {
+            background: #7f1d1d !important;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="card">
+
+    <div class="icon">
+        🏠
+    </div>
+
+    <h1>Home LAN Connection</h1>
+
+    <p>
+        This page keeps your Discord Home LAN
+        connection active.
+    </p>
+
+    <div id="status">
+        Connecting...
+    </div>
+
+</div>
+
+<script>
+
+const statusElement =
+    document.getElementById("status");
+
+const token =
+    window.location.pathname
+        .split("/")
+        .filter(Boolean)
+        .pop();
+
+
+async function heartbeat() {
+
+    try {
+
+        const response = await fetch(
+            `/api/heartbeat/${token}`,
+            {
+                method: "POST",
+                cache: "no-store"
+            }
+        );
+
+        const data =
+            await response.json();
+
+        if (data.connected) {
+
+            statusElement.textContent =
+                "🟢 Connected to the Home LAN";
+
+            statusElement.className =
+                "connected";
+
+        } else {
+
+            statusElement.textContent =
+                "🔴 Connection rejected";
+
+            statusElement.className =
+                "error";
+        }
+
+    } catch (error) {
+
+        statusElement.textContent =
+            "🔴 Server connection lost";
+
+        statusElement.className =
+            "error";
+    }
+}
+
+
+heartbeat();
+
+// Refresh every 60 seconds.
+setInterval(
+    heartbeat,
+    60 * 1000
+);
+
+</script>
+
+</body>
+</html>

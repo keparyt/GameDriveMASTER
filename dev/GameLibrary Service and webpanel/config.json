@@ -1,0 +1,12 @@
+{
+    "scan_interval_seconds": 10,
+    "api_host": "127.0.0.1",
+    "api_port": 8765,
+    "game_folder": "Cracked",
+    "config_file": "GameDrive.ini",
+    "image_cache": "data/images",
+    "metadata": {
+        "enabled": true,
+        "auto_lookup": false
+    }
+}

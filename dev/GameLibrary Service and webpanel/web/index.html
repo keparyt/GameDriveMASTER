@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width,initial-scale=1"
+    >
+
+    <title>Game Library</title>
+
+    <link
+        rel="stylesheet"
+        href="/style.css"
+    >
+
+</head>
+
+<body>
+
+<header>
+
+    <div class="brand">
+        GAME<span>LIBRARY</span>
+    </div>
+
+    <div class="status">
+        <i></i>
+        LOCAL
+    </div>
+
+</header>
+
+
+<main>
+
+    <section class="hero">
+
+        <h1>Your Games</h1>
+
+        <p>
+            Games available across your GameDrive collection.
+        </p>
+
+        <input
+            id="search"
+            autofocus
+            autocomplete="off"
+            placeholder="Search games..."
+        >
+
+        <label>
+            <input
+                id="online"
+                type="checkbox"
+            >
+            Only connected drives
+        </label>
+
+        <div id="error"></div>
+
+    </section>
+
+
+    <section
+        id="grid"
+        class="grid"
+    ></section>
+
+</main>
+
+
+<script src="/app.js"></script>
+
+</body>
+
+</html>
