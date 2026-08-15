@@ -16,20 +16,28 @@ class MetadataManager:
     def __init__(self, db, config=None):
         self.db = db
         self.config = config or {}
-        self.enabled = bool(self.config.get("enabled", True) and app_config.STEAMGRIDDB_ENABLED and app_config.STEAMGRIDDB_API_KEY)
+        self.api_key = (app_config.STEAMGRIDDB_API_KEY or "").strip()
+        self.enabled = bool(self.config.get("enabled", True) and app_config.STEAMGRIDDB_ENABLED and self.api_key)
         self.auto_lookup = bool(self.config.get("auto_lookup", True))
         self.base_url = app_config.STEAMGRIDDB_BASE_URL.rstrip("/")
         self.cache_dir = (app_config.BASE_DIR / app_config.ARTWORK_CACHE_DIR).resolve()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
-        self.session.headers.update({"Authorization": f"Bearer {app_config.STEAMGRIDDB_API_KEY}", "User-Agent": "GameDrive/1.0"})
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "GameDrive/1.0"
+        })
         self._queue = queue.Queue()
         self._queued = set()
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._auth_failed = False
         self._worker = threading.Thread(target=self._worker_loop, name="SteamGridDBWorker", daemon=True)
         self._worker.start()
-        log.info("SteamGridDB initialized: enabled=%s auto_lookup=%s cache=%s", self.enabled, self.auto_lookup, self.cache_dir)
+        if self.enabled:
+            log.info("SteamGridDB initialized: enabled=True auto_lookup=%s cache=%s", self.auto_lookup, self.cache_dir)
+        else:
+            log.warning("SteamGridDB disabled: no API key configured")
 
     @staticmethod
     def _safe_name(value):
@@ -37,7 +45,7 @@ class MetadataManager:
         return value.strip(" .") or "unknown"
 
     def queue_lookup(self, game_id, game_name):
-        if not self.enabled or not game_name:
+        if not self.enabled or self._auth_failed or not game_name:
             return False
         with self._lock:
             if game_id in self._queued:
@@ -55,9 +63,10 @@ class MetadataManager:
             except queue.Empty:
                 continue
             try:
-                log.info("Artwork lookup started: id=%s name=%r", game_id, game_name)
-                self.lookup(game_id, game_name)
-                log.info("Artwork lookup finished: id=%s name=%r", game_id, game_name)
+                if not self._auth_failed:
+                    log.info("Artwork lookup started: id=%s name=%r", game_id, game_name)
+                    self.lookup(game_id, game_name)
+                    log.info("Artwork lookup finished: id=%s name=%r", game_id, game_name)
             except Exception:
                 log.exception("Artwork lookup crashed: id=%s name=%r", game_id, game_name)
             finally:
@@ -70,12 +79,28 @@ class MetadataManager:
         if self._worker.is_alive():
             self._worker.join(timeout=2)
 
+    def _handle_response_error(self, response, game_name):
+        if response.status_code == 401:
+            self._auth_failed = True
+            log.error(
+                "SteamGridDB authentication failed (HTTP 401). "
+                "The API key is missing, revoked, or invalid. Artwork lookups are paused. "
+                "Set STEAMGRIDDB_API_KEY locally and restart the service."
+            )
+            return True
+        if response.status_code == 403:
+            log.error("SteamGridDB access denied (HTTP 403) while looking up %r", game_name)
+            return True
+        response.raise_for_status()
+        return False
+
     def _search(self, game_name):
         url = f"{self.base_url}/search/autocomplete/{requests.utils.quote(game_name, safe='')}"
         log.debug("SteamGridDB search: %s", url)
         response = self.session.get(url, timeout=15)
         log.debug("SteamGridDB search response: HTTP %s", response.status_code)
-        response.raise_for_status()
+        if self._handle_response_error(response, game_name):
+            return None
         data = response.json().get("data", [])
         if not data:
             return None
@@ -86,12 +111,13 @@ class MetadataManager:
                 return game
         return data[0]
 
-    def _artwork_url(self, category, sgdb_id):
+    def _artwork_url(self, category, sgdb_id, game_name):
         url = f"{self.base_url}/{category}/game/{sgdb_id}?mimes=image/jpeg,image/png"
         log.debug("SteamGridDB artwork request: category=%s id=%s", category, sgdb_id)
         response = self.session.get(url, timeout=15)
         log.debug("SteamGridDB artwork response: HTTP %s", response.status_code)
-        response.raise_for_status()
+        if self._handle_response_error(response, game_name):
+            return None
         data = response.json().get("data", [])
         return data[0].get("url") if data else None
 
@@ -107,12 +133,13 @@ class MetadataManager:
         log.debug("Artwork saved: %s (%d bytes)", destination, destination.stat().st_size)
 
     def lookup(self, game_id, game_name):
-        if not self.enabled:
+        if not self.enabled or self._auth_failed:
             return None
         try:
             game = self._search(game_name)
-            if not game:
-                log.info("SteamGridDB: no match for %r", game_name)
+            if self._auth_failed or not game:
+                if not self._auth_failed:
+                    log.info("SteamGridDB: no match for %r", game_name)
                 return None
             sgdb_id = game.get("id")
             matched_name = game.get("name") or game_name
@@ -120,23 +147,41 @@ class MetadataManager:
             game_dir = self.cache_dir / safe_name
             game_dir.mkdir(parents=True, exist_ok=True)
             log.info("SteamGridDB match: %r -> id=%s name=%r", game_name, sgdb_id, matched_name)
-            assets = {"capsule": ("grids", "capsule"), "hero": ("heroes", "hero"), "logo": ("logos", "logo"), "cover": ("grids", "cover")}
+            assets = {
+                "capsule": ("grids", "capsule"),
+                "hero": ("heroes", "hero"),
+                "logo": ("logos", "logo"),
+                "cover": ("grids", "cover")
+            }
             paths = {}
             for field, (category, filename) in assets.items():
+                if self._auth_failed:
+                    break
                 try:
-                    url = self._artwork_url(category, sgdb_id)
+                    url = self._artwork_url(category, sgdb_id, game_name)
                     if url:
                         extension = ".png" if ".png" in url.lower() else ".jpg"
                         destination = game_dir / f"{filename}{extension}"
                         self._download(url, destination)
                         paths[field] = f"/artwork/{safe_name}/{destination.name}"
                         log.info("Artwork ready: %s=%s", field, paths[field])
-                except requests.RequestException:
-                    log.exception("SteamGridDB %s artwork failed for %r", field, game_name)
-            self.db.set_metadata(game_id, {"title": matched_name, "app_id": str(sgdb_id) if sgdb_id is not None else None, "capsule": paths.get("capsule"), "logo": paths.get("logo"), "hero": paths.get("hero"), "cover": paths.get("cover"), "release_date": None, "description": None})
+                except requests.RequestException as exc:
+                    log.warning("SteamGridDB %s artwork failed for %r: %s", field, game_name, exc)
+            if self._auth_failed:
+                return None
+            self.db.set_metadata(game_id, {
+                "title": matched_name,
+                "app_id": str(sgdb_id) if sgdb_id is not None else None,
+                "capsule": paths.get("capsule"),
+                "logo": paths.get("logo"),
+                "hero": paths.get("hero"),
+                "cover": paths.get("cover"),
+                "release_date": None,
+                "description": None
+            })
             return dict(self.db.get_game(game_id))
-        except requests.RequestException:
-            log.exception("SteamGridDB lookup failed for id=%s name=%r", game_id, game_name)
+        except requests.RequestException as exc:
+            log.warning("SteamGridDB request failed for id=%s name=%r: %s", game_id, game_name, exc)
             return None
         except Exception:
             log.exception("Metadata lookup failed for id=%s name=%r", game_id, game_name)
