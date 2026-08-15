@@ -68,42 +68,48 @@ def main():
         playnite = PlayniteBridge(config.get("playnite", {}))
 
         if playnite.enabled:
-            # Do not block the Game Library HTTP server waiting for Playnite.
-            # Playnite loads extensions asynchronously, so its GameDrive API
-            # may become available several seconds after the process starts.
+            # Start Playnite immediately, but never restart it just because the
+            # extension API takes a few seconds to load. Playnite initializes
+            # library extensions asynchronously and the API can legitimately
+            # appear after the process itself is already running.
             try:
                 playnite.start(wait_for_api=False)
             except Exception:
                 log.exception("Playnite startup failed; continuing and retrying in background")
 
             def wait_for_playnite_api():
-                deadline = time.monotonic() + 60
-                restart_at = time.monotonic() + 5
-                restarted = False
+                deadline = time.monotonic() + 90
                 logged_wait = False
                 while not stop_event.is_set() and time.monotonic() < deadline:
                     try:
                         if playnite.available:
                             log.info("GameDrive Playnite API is ready")
-                            playnite.refresh(force=True)
+                            # Give Playnite's library update/import cycle time to
+                            # finish before treating an empty /games response as
+                            # the real installed-game list.
+                            for attempt in range(20):
+                                games = playnite.read_games(force=True)
+                                if games:
+                                    log.info("Playnite library ready: %d installed game(s)", len(games))
+                                    return
+                                if attempt == 0:
+                                    log.info("Playnite API is online; waiting for the Playnite library to finish loading...")
+                                stop_event.wait(0.5)
+                            log.warning("Playnite API is online but currently reports no installed games")
                             return
                         if not logged_wait:
                             log.info("Waiting for GameDrive Playnite API to become ready...")
                             logged_wait = True
-                        # If Playnite was already open before the service started,
-                        # it may still have the previous DLL loaded. Restart it
-                        # once so the current GameDrive extension is loaded.
-                        if not restarted and time.monotonic() >= restart_at:
-                            restarted = True
-                            if playnite.restart():
-                                log.info("Playnite restarted; waiting for GameDrive API")
-                        else:
+                        # Do not restart a healthy Playnite process merely because
+                        # the extension has not finished loading yet. A restart can
+                        # race Playnite's own startup/library initialization.
+                        if not playnite._is_running():
                             playnite.start(wait_for_api=False)
                     except Exception:
                         log.exception("Playnite readiness check failed")
                     stop_event.wait(0.5)
                 if not stop_event.is_set():
-                    log.warning("GameDrive Playnite API did not become ready within 60 seconds")
+                    log.warning("GameDrive Playnite API did not become ready within 90 seconds")
 
             threading.Thread(
                 target=wait_for_playnite_api,
