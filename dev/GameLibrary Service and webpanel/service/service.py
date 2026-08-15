@@ -9,7 +9,6 @@ import uvicorn
 
 from .api import create_app
 from .database import Database
-from .metadata import MetadataManager
 from .scanner import Scanner
 
 
@@ -17,6 +16,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / "config.json"
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class DisabledMetadataManager:
+    """Fallback metadata provider so the web API can start without config.py."""
+
+    enabled = False
+    auto_lookup = False
+
+    def __init__(self, reason=None):
+        import queue
+
+        self._queue = queue.Queue()
+        self.reason = reason
+
+    def queue_lookup(self, game_id, game_name):
+        return False
+
+    def stop(self):
+        return None
 
 
 def load_config():
@@ -41,6 +59,23 @@ def setup_logging():
     logging.getLogger("gamelibrary.service").setLevel(logging.DEBUG)
 
 
+def create_metadata_manager(config):
+    """Load SteamGridDB support without making it a hard startup dependency."""
+    log = logging.getLogger("gamelibrary.service")
+    metadata_config = config.get("metadata", {})
+
+    try:
+        # Import lazily so a missing local config.py/API key cannot prevent the
+        # actual Game Library web API from starting.
+        from .metadata import MetadataManager
+
+        metadata = MetadataManager(Database(), metadata_config)
+        return metadata
+    except Exception as exc:
+        log.exception("SteamGridDB metadata initialization failed; continuing without artwork: %s", exc)
+        return DisabledMetadataManager(str(exc))
+
+
 def main():
     setup_logging()
     log = logging.getLogger("gamelibrary.service")
@@ -48,6 +83,10 @@ def main():
     log.info("Python executable: %s", sys.executable)
     log.info("Base directory: %s", BASE_DIR)
     log.info("Config path: %s", CONFIG_PATH)
+
+    database = None
+    metadata = None
+    stop_event = threading.Event()
 
     try:
         config = load_config()
@@ -62,11 +101,22 @@ def main():
         log.debug("Scanner initialized")
 
         metadata_config = config.get("metadata", {})
-        log.debug("Initializing metadata manager")
-        metadata = MetadataManager(database, metadata_config)
-        log.info("Metadata manager initialized: enabled=%s auto_lookup=%s", metadata.enabled, metadata.auto_lookup)
-
-        stop_event = threading.Event()
+        try:
+            from .metadata import MetadataManager
+            metadata = MetadataManager(database, metadata_config)
+            log.info(
+                "Metadata manager initialized: enabled=%s auto_lookup=%s",
+                metadata.enabled,
+                metadata.auto_lookup,
+            )
+        except Exception as exc:
+            # Artwork is optional. A broken/missing local SteamGridDB config must
+            # never take down the HTTP server or web panel.
+            log.exception(
+                "Metadata manager initialization failed; starting API without artwork: %s",
+                exc,
+            )
+            metadata = DisabledMetadataManager(str(exc))
 
         def scan_loop():
             interval = max(2, int(config.get("scan_interval_seconds", 10)))
@@ -76,8 +126,6 @@ def main():
                     log.debug("Starting scanner cycle")
                     scanner.scan()
                     log.debug("Scanner cycle complete")
-                    # Artwork is intentionally queued in the background so the API
-                    # never waits for SteamGridDB/network requests.
                     if metadata.enabled and metadata.auto_lookup:
                         rows = database.search(connected_only=True)
                         queued = 0
@@ -85,7 +133,11 @@ def main():
                             if not row["capsule"]:
                                 if metadata.queue_lookup(row["id"], row["name"]):
                                     queued += 1
-                        log.debug("Artwork queue update: queued=%s pending=%s", queued, metadata._queue.qsize())
+                        log.debug(
+                            "Artwork queue update: queued=%s pending=%s",
+                            queued,
+                            metadata._queue.qsize(),
+                        )
                 except Exception:
                     log.exception("Scanner cycle failed")
                 stop_event.wait(interval)
@@ -97,23 +149,35 @@ def main():
         host = config.get("api_host", "127.0.0.1")
         port = int(config.get("api_port", 8765))
         log.info("Game Library API running at http://%s:%s", host, port)
+        log.info("Web panel available at http://%s:%s/", host, port)
 
         try:
-            uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
+            uvicorn.run(
+                app,
+                host=host,
+                port=port,
+                log_level="warning",
+                access_log=False,
+            )
         except Exception:
             log.exception("API server stopped unexpectedly")
             raise
-        finally:
-            stop_event.set()
-            metadata.stop()
-            try:
-                database.close()
-            except Exception:
-                log.exception("Database close failed")
     except Exception:
         log.exception("FATAL backend startup failure")
         traceback.print_exc()
         raise
+    finally:
+        stop_event.set()
+        if metadata is not None:
+            try:
+                metadata.stop()
+            except Exception:
+                log.exception("Metadata shutdown failed")
+        if database is not None:
+            try:
+                database.close()
+            except Exception:
+                log.exception("Database close failed")
 
 
 if __name__ == "__main__":
