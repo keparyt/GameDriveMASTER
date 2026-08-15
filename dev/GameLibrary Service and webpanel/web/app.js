@@ -16,72 +16,24 @@ const launchButton = document.querySelector("#launch-game");
 const launchStatus = document.querySelector("#launch-status");
 let selectedGameId = null;
 let closeTimer = null;
+let previousDriveState = null;
+let drivePollTimer = null;
 
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c])); }
 function showError(message) { errorBox.textContent = message; errorBox.style.display = "block"; }
 function hideError() { errorBox.textContent = ""; errorBox.style.display = "none"; }
 function formatBytes(bytes) { let n=Number(bytes||0),u=["B","GB","TB","PB"],i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n ? `${n>=10||i===0?Math.round(n):n.toFixed(1)} ${u[i]}` : "—"; }
 function clearCloseTimer() { if(closeTimer){clearInterval(closeTimer);closeTimer=null;} }
-
-function createDriveCard(drive) {
-    const connected=Boolean(drive.connected), letter=drive.last_letter?`${drive.last_letter}:`:"—";
-    return `<div class="drive-chip ${connected?"connected":"disconnected"}"><span class="drive-dot"></span><div class="drive-chip-info"><strong>${escapeHtml(drive.name||"Unnamed GameDrive")}</strong><small>${escapeHtml(letter)} · ${connected?"Connected":"Offline"}</small></div></div>`;
-}
-function createHardwareCard(disk) {
-    const connected=!disk.offline && String(disk.status).toLowerCase().includes("online");
-    return `<div class="hardware-chip ${connected?"connected":"disconnected"}"><span class="hardware-icon">▣</span><div class="drive-chip-info"><strong>${escapeHtml(disk.name||"Unknown disk")}</strong><small>${escapeHtml(disk.bus||"Unknown")} · ${escapeHtml(formatBytes(disk.size))} · ${escapeHtml(disk.health||"Unknown")}</small></div></div>`;
-}
-async function loadDrives() {
-    const [a,b]=await Promise.all([fetch("/api/drives"),fetch("/api/system/disks")]);
-    if(!a.ok||!b.ok) throw new Error("Unable to load drive information");
-    const drives=await a.json(),hardware=await b.json(),connected=drives.filter(d=>Boolean(d.connected)).length;
-    driveCount.textContent=`${connected} connected / ${drives.length} collections`;
-    drivesBox.innerHTML=`<div class="drive-group"><div class="drive-group-title">GameDrive collections</div><div class="drive-list">${drives.map(createDriveCard).join("")||'<span class="muted">No GameDrive collections indexed yet.</span>'}</div></div><div class="drive-group"><div class="drive-group-title">Physical hardware</div><div class="drive-list">${hardware.map(createHardwareCard).join("")||'<span class="muted">No physical disks detected.</span>'}</div></div>`;
-}
-function createCard(game) {
-    const connected=Boolean(game.connected),cover=game.cover||game.capsule,logo=game.logo,title=game.title||game.name||"Unknown Game",drive=game.drive_name||"Unknown drive",letter=connected&&game.last_letter?`${game.last_letter}:`:"Offline";
-    return `<article class="card ${connected?"":"offline-card"}" data-game-id="${game.id}" tabindex="0" role="button" aria-label="Open ${escapeHtml(title)}"><div class="art">${cover?`<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy">`:'<div class="fallback">NO ARTWORK</div>'}</div><div class="info">${logo?`<img class="logo" src="${escapeHtml(logo)}" alt="" loading="lazy">`:""}<div class="title" title="${escapeHtml(title)}">${escapeHtml(title)}</div><div class="drive">${escapeHtml(drive)} · ${escapeHtml(letter)}</div><div class="badge ${connected?"":"offline"}">${connected?"CONNECTED":"OFFLINE"}</div></div></article>`;
-}
-async function loadGames() {
-    const params=new URLSearchParams({q:search.value.trim(),connected_only:online.checked}),response=await fetch(`/api/games?${params}`);
-    if(!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data=await response.json(); grid.innerHTML=data.length?data.map(createCard).join(""):`<div class="empty">No games found.</div>`;
-}
-function startConnectedCountdown() {
-    clearCloseTimer();
-    let remaining=10;
-    launchButton.disabled=true;
-    launchStatus.className="launch-status countdown-status";
-    launchStatus.textContent=`Connected · closing in ${remaining}s`;
-    closeTimer=setInterval(()=>{
-        remaining--;
-        if(remaining<=0){ clearCloseTimer(); closeGame(); return; }
-        launchStatus.textContent=`Connected · closing in ${remaining}s`;
-    },1000);
-}
-async function openGame(id) {
-    clearCloseTimer(); selectedGameId=id; modal.classList.add("open"); modal.setAttribute("aria-hidden","false"); document.body.classList.add("modal-open");
-    detailTitle.textContent="Loading…"; detailLogo.style.display="none"; detailHero.style.backgroundImage="none"; detailDescription.textContent="Loading Steam details…"; detailMeta.textContent=""; trailerSection.style.display="none"; detailTrailer.pause(); detailTrailer.removeAttribute("src"); launchButton.disabled=true; launchStatus.textContent="";
-    try {
-        const response=await fetch(`/api/games/${id}/details`); if(!response.ok) throw new Error("Unable to load game details");
-        const game=await response.json();
-        detailTitle.textContent=game.title||game.name||"Unknown Game";
-        if(game.logo){detailLogo.src=game.logo;detailLogo.style.display="block";}
-        const hero=game.hero||game.capsule||game.cover; if(hero) detailHero.style.backgroundImage=`url("${String(hero).replace(/"/g,'\\"')}")`;
-        detailMeta.textContent=[game.release_date,game.drive_name,game.last_letter?`${game.last_letter}:`:null].filter(Boolean).join(" · ");
-        detailDescription.innerHTML=game.description||"No description available.";
-        if(game.trailer){detailTrailer.src=game.trailer;trailerSection.style.display="block";}
-        if(game.connected) startConnectedCountdown();
-        else { launchButton.disabled=true; launchStatus.className="launch-status"; launchStatus.textContent="Drive offline"; }
-    } catch(error){ console.error(error); detailTitle.textContent="Unable to load game"; detailDescription.textContent=error.message; launchButton.disabled=true; }
-}
-function closeGame(){ clearCloseTimer(); modal.classList.remove("open"); modal.setAttribute("aria-hidden","true"); document.body.classList.remove("modal-open"); detailTrailer.pause(); detailTrailer.removeAttribute("src"); selectedGameId=null; }
-
-grid.addEventListener("click",e=>{const card=e.target.closest(".card");if(card)openGame(Number(card.dataset.gameId));});
-grid.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.closest(".card")){e.preventDefault();openGame(Number(e.target.closest(".card").dataset.gameId));}});
-document.querySelectorAll("[data-close-game]").forEach(el=>el.addEventListener("click",closeGame));
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal.classList.contains("open"))closeGame();});
-launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;clearCloseTimer();launchButton.disabled=true;launchStatus.textContent="Starting…";try{const r=await fetch(`/api/games/${selectedGameId}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);launchStatus.textContent="Game started";}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`;}finally{setTimeout(()=>{if(selectedGameId)launchButton.disabled=false;},500);}});
-
-async function load(){hideError();try{await loadDrives();await loadGames();}catch(e){console.error(e);showError("Unable to load the complete Game Library.");}}
-let timer=null;search.addEventListener("input",()=>{clearTimeout(timer);timer=setTimeout(loadGames,150);});online.addEventListener("change",loadGames);load();
+function showDriveNotification(name, connected) { let toast=document.querySelector("#drive-notification"); if(!toast){toast=document.createElement("div");toast.id="drive-notification";toast.className="drive-notification";document.body.appendChild(toast);} toast.className=`drive-notification ${connected?"is-connected":"is-disconnected"}`;toast.innerHTML=`<span class="drive-notification-icon">${connected?"✓":"!"}</span><span><strong>${escapeHtml(name||"GameDrive")}</strong><small>${connected?"Drive connected":"Drive disconnected"}</small></span>`;requestAnimationFrame(()=>toast.classList.add("show"));clearTimeout(toast._hideTimer);toast._hideTimer=setTimeout(()=>toast.classList.remove("show"),4500); }
+function driveState(drives) { return drives.map(d=>`${d.uuid||d.id}:${Boolean(d.connected)}`).sort().join("|"); }
+async function checkDriveChanges() { try { const response=await fetch("/api/drives",{cache:"no-store"}); if(!response.ok)return; const drives=await response.json(),currentState=driveState(drives); if(previousDriveState!==null&&previousDriveState!==currentState){const oldMap=new Map(previousDriveState.split("|").filter(Boolean).map(x=>{const p=x.split(":");return [p[0],p[1]==="true"];}));for(const drive of drives){const key=String(drive.uuid||drive.id),old=oldMap.get(key),now=Boolean(drive.connected);if(old!==undefined&&old!==now)showDriveNotification(drive.name,now);else if(old===undefined&&now)showDriveNotification(drive.name,true);}await loadDrives(false);await loadGames();} previousDriveState=currentState; } catch(error){ console.debug("Drive status check failed",error); } }
+function createDriveCard(drive) { const connected=Boolean(drive.connected),letter=drive.last_letter?`${drive.last_letter}:`:"—";return `<div class="drive-chip ${connected?"connected":"disconnected"}"><span class="drive-dot"></span><div class="drive-chip-info"><strong>${escapeHtml(drive.name||"Unnamed GameDrive")}</strong><small>${escapeHtml(letter)} · ${connected?"Connected":"Offline"}</small></div></div>`; }
+function createHardwareCard(disk) { const connected=!disk.offline&&String(disk.status).toLowerCase().includes("online");return `<div class="hardware-chip ${connected?"connected":"disconnected"}"><span class="hardware-icon">▣</span><div class="drive-chip-info"><strong>${escapeHtml(disk.name||"Unknown disk")}</strong><small>${escapeHtml(disk.bus||"Unknown")} · ${escapeHtml(formatBytes(disk.size))} · ${escapeHtml(disk.health||"Unknown")}</small></div></div>`; }
+async function loadDrives(updateState=true) { const [a,b]=await Promise.all([fetch("/api/drives",{cache:"no-store"}),fetch("/api/system/disks",{cache:"no-store"})]);if(!a.ok||!b.ok)throw new Error("Unable to load drive information");const drives=await a.json(),hardware=await b.json(),connected=drives.filter(d=>Boolean(d.connected)).length;driveCount.textContent=`${connected} connected / ${drives.length} collections`;drivesBox.innerHTML=`<div class="drive-group"><div class="drive-group-title">GameDrive collections</div><div class="drive-list">${drives.map(createDriveCard).join("")||'<span class="muted">No GameDrive collections indexed yet.</span>'}</div></div><div class="drive-group"><div class="drive-group-title">Physical hardware</div><div class="drive-list">${hardware.map(createHardwareCard).join("")||'<span class="muted">No physical disks detected.</span>'}</div></div>`;if(updateState)previousDriveState=driveState(drives); }
+function createCard(game) { const connected=Boolean(game.connected),cover=game.cover||game.capsule,logo=game.logo,title=game.title||game.name||"Unknown Game",drive=game.drive_name||"Unknown drive",letter=connected&&game.last_letter?`${game.last_letter}:`:"Offline";return `<article class="card ${connected?"":"offline-card"}" data-game-id="${game.id}" tabindex="0" role="button" aria-label="Open ${escapeHtml(title)}"><div class="art">${cover?`<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy">`:'<div class="fallback">NO ARTWORK</div>'}</div><div class="info">${logo?`<img class="logo" src="${escapeHtml(logo)}" alt="" loading="lazy">`:""}<div class="title" title="${escapeHtml(title)}">${escapeHtml(title)}</div><div class="drive">${escapeHtml(drive)} · ${escapeHtml(letter)}</div><div class="badge ${connected?"":"offline"}">${connected?"CONNECTED":"OFFLINE"}</div></div></article>`; }
+async function loadGames() { const params=new URLSearchParams({q:search.value.trim(),connected_only:online.checked}),response=await fetch(`/api/games?${params}`,{cache:"no-store"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();grid.innerHTML=data.length?data.map(createCard).join(""):`<div class="empty">No games found.</div>`; }
+function startConnectedCountdown() { clearCloseTimer();let remaining=10;launchButton.disabled=true;launchStatus.className="launch-status countdown-status";launchStatus.textContent=`Connected · closing in ${remaining}s`;closeTimer=setInterval(()=>{remaining--;if(remaining<=0){clearCloseTimer();closeGame();return;}launchStatus.textContent=`Connected · closing in ${remaining}s`;},1000); }
+async function openGame(id) { clearCloseTimer();selectedGameId=id;modal.classList.add("open");modal.setAttribute("aria-hidden","false");document.body.classList.add("modal-open");detailTitle.textContent="Loading…";detailLogo.style.display="none";detailHero.style.backgroundImage="none";detailDescription.textContent="Loading Steam details…";detailMeta.textContent="";trailerSection.style.display="none";detailTrailer.pause();detailTrailer.removeAttribute("src");launchButton.disabled=true;launchStatus.textContent="";try{const response=await fetch(`/api/games/${id}/details`,{cache:"no-store"});if(!response.ok)throw new Error("Unable to load game details");const game=await response.json();detailTitle.textContent=game.title||game.name||"Unknown Game";if(game.logo){detailLogo.src=game.logo;detailLogo.style.display="block";}const hero=game.hero||game.capsule||game.cover;if(hero)detailHero.style.backgroundImage=`url("${String(hero).replace(/"/g,'\\"')}")`;detailMeta.textContent=[game.release_date,game.drive_name,game.last_letter?`${game.last_letter}:`:null].filter(Boolean).join(" · ");detailDescription.innerHTML=game.description||"No description available.";if(game.trailer){detailTrailer.src=game.trailer;trailerSection.style.display="block";}if(game.connected)startConnectedCountdown();else{launchButton.disabled=true;launchStatus.className="launch-status";launchStatus.textContent="Drive offline";}}catch(error){console.error(error);detailTitle.textContent="Unable to load game";detailDescription.textContent=error.message;launchButton.disabled=true;} }
+function closeGame(){clearCloseTimer();modal.classList.remove("open");modal.setAttribute("aria-hidden","true");document.body.classList.remove("modal-open");detailTrailer.pause();detailTrailer.removeAttribute("src");selectedGameId=null;}
+grid.addEventListener("click",e=>{const card=e.target.closest(".card");if(card)openGame(Number(card.dataset.gameId));});grid.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.closest(".card")){e.preventDefault();openGame(Number(e.target.closest(".card").dataset.gameId));}});document.querySelectorAll("[data-close-game]").forEach(el=>el.addEventListener("click",closeGame));document.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal.classList.contains("open"))closeGame();});launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;clearCloseTimer();launchButton.disabled=true;launchStatus.textContent="Starting…";try{const r=await fetch(`/api/games/${selectedGameId}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);launchStatus.textContent="Game started";}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`;}finally{setTimeout(()=>{if(selectedGameId)launchButton.disabled=false;},500);}});
+async function load(){hideError();try{await loadDrives();await loadGames();clearInterval(drivePollTimer);drivePollTimer=setInterval(checkDriveChanges,2000);}catch(e){console.error(e);showError("Unable to load the complete Game Library.");}}let timer=null;search.addEventListener("input",()=>{clearTimeout(timer);timer=setTimeout(loadGames,150);});online.addEventListener("change",loadGames);load();
