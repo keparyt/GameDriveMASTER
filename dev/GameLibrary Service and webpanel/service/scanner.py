@@ -53,25 +53,36 @@ def powershell_drive_value(drive, expression):
         return None
 
 
-def physical_uuid(drive):
-    unique_id = powershell_drive_value(drive, "$d.UniqueId")
-    return unique_id
-
-
 def physical_serial(drive):
-    return powershell_drive_value(drive, "$d.SerialNumber")
+    """Return the manufacturer's physical disk serial number.
+
+    This is intentionally preferred over Windows' volume serial because the
+    physical serial is normally printed on the HDD/SSD label and survives
+    drive-letter, partition, and filesystem changes.
+    """
+    value = powershell_drive_value(drive, "$d.SerialNumber")
+    if value:
+        return value.strip()
+    return None
+
+
+def physical_uuid(drive):
+    return powershell_drive_value(drive, "$d.UniqueId")
 
 
 def drive_id(drive):
+    # Physical serial is the primary identity. It is the value the user can
+    # physically read from the HDD/SSD label, so the same drive is recognized
+    # even if Windows assigns it a different letter.
+    serial = physical_serial(drive)
+    if serial:
+        return f"SERIAL:{serial}"
+
+    # Fallbacks are only used when Windows does not expose a physical serial.
     unique_id = physical_uuid(drive)
     if unique_id:
         return f"UUID:{unique_id}"
-    serial = physical_serial(drive)
     volume = volume_serial(drive)
-    if serial and volume:
-        return f"DISK:{serial}|VOL:{volume}"
-    if serial:
-        return f"DISK:{serial}"
     if volume:
         return f"VOL:{volume}"
     return None
@@ -112,12 +123,10 @@ class Scanner:
             log.warning("Could not identify drive %s", drive)
             return False
 
-        log.debug("Drive identity: letter=%s uuid=%s name=%r", drive[0], uid, info["name"])
+        log.debug("Drive identity: letter=%s identity=%s", drive[0], uid)
         drive_id_value = self.db.upsert_drive(uid, info["name"], info["description"], drive[0])
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
-            # Do not delete the previously indexed library just because the
-            # drive is temporarily unavailable or its folder is inaccessible.
             log.warning("Game folder unavailable on %s; keeping existing indexed games", drive)
             return True
 
@@ -130,7 +139,6 @@ class Scanner:
                 seen_paths.add(relative_path)
                 self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
         except OSError as exc:
-            # A partial filesystem read must never erase the library.
             log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
             return True
 
