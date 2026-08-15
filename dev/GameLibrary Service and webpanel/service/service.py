@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -76,9 +77,11 @@ def main():
                 log.exception("Playnite startup failed; continuing and retrying in background")
 
             def wait_for_playnite_api():
-                deadline = __import__("time").monotonic() + 60
+                deadline = time.monotonic() + 60
+                restart_at = time.monotonic() + 5
+                restarted = False
                 logged_wait = False
-                while not stop_event.is_set() and __import__("time").monotonic() < deadline:
+                while not stop_event.is_set() and time.monotonic() < deadline:
                     try:
                         if playnite.available:
                             log.info("GameDrive Playnite API is ready")
@@ -87,7 +90,15 @@ def main():
                         if not logged_wait:
                             log.info("Waiting for GameDrive Playnite API to become ready...")
                             logged_wait = True
-                        playnite.start(wait_for_api=False)
+                        # If Playnite was already open before the service started,
+                        # it may still have the previous DLL loaded. Restart it
+                        # once so the current GameDrive extension is loaded.
+                        if not restarted and time.monotonic() >= restart_at:
+                            restarted = True
+                            if playnite.restart():
+                                log.info("Playnite restarted; waiting for GameDrive API")
+                        else:
+                            playnite.start(wait_for_api=False)
                     except Exception:
                         log.exception("Playnite readiness check failed")
                     stop_event.wait(0.5)
