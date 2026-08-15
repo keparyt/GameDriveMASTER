@@ -635,3 +635,62 @@
 2026-08-14 18:36:20,235 [INFO] gamelibrary.scanner: Scan finished: 3 GameDrive(s) online
 2026-08-14 18:36:36,915 [INFO] gamelibrary.scanner: Scan finished: 3 GameDrive(s) online
 2026-08-14 18:36:53,769 [INFO] gamelibrary.scanner: Scan finished: 3 GameDrive(s) online
+2026-08-15 02:43:22,823 [INFO] gamelibrary.tray: ========== Game Library launcher starting ==========
+2026-08-15 02:43:22,824 [INFO] gamelibrary.tray: Base directory: E:\DEV\GameDriveMASTER\dev\GameLibrary Service and webpanel
+2026-08-15 02:43:22,824 [INFO] gamelibrary.tray: Starting Game Library backend
+2026-08-15 02:43:22,825 [DEBUG] urllib3.connectionpool: Starting new HTTP connection (1): 127.0.0.1:8765
+2026-08-15 02:43:23,327 [DEBUG] gamelibrary.tray: Health check failed: HTTPConnectionPool(host='127.0.0.1', port=8765): Max retries exceeded with url: /api/health (Caused by ConnectTimeoutError(<HTTPConnection(host='127.0.0.1', port=8765) at 0x231f9125a50>, 'Connection to 127.0.0.1 timed out. (connect timeout=0.5)'))
+2026-08-15 02:43:23,334 [INFO] gamelibrary.tray: Backend process started: pid=194076 log=E:\DEV\GameDriveMASTER\dev\GameLibrary Service and webpanel\logs\backend.log
+2026-08-15 02:43:23,335 [DEBUG] urllib3.connectionpool: Starting new HTTP connection (1): 127.0.0.1:8765
+2026-08-15 02:43:23,843 [DEBUG] gamelibrary.tray: Health check failed: HTTPConnectionPool(host='127.0.0.1', port=8765): Max retries exceeded with url: /api/health (Caused by ConnectTimeoutError(<HTTPConnection(host='127.0.0.1', port=8765) at 0x231f9125060>, 'Connection to 127.0.0.1 timed out. (connect timeout=0.5)'))
+2026-08-15 02:43:23,843 [ERROR] gamelibrary.tray: Backend exited during startup with code 1
+2026-08-15 02:43:23,864 [DEBUG] PIL.Image: Importing AvifImagePlugin
+2026-08-15 02:43:23,865 [DEBUG] PIL.Image: Importing BlpImagePlugin
+2026-08-15 02:43:23,866 [DEBUG] PIL.Image: Importing BmpImagePlugin
+2026-08-15 02:43:23,866 [DEBUG] PIL.Image: Importing BufrStubImagePlugin
+2026-08-15 02:43:23,866 [DEBUG] PIL.Image: Importing CurImagePlugin
+2026-08-15 02:43:23,867 [DEBUG] PIL.Image: Importing DcxImagePlugin
+2026-08-15 02:43:23,867 [DEBUG] PIL.Image: Importing DdsImagePlugin
+2026-08-15 02:43:23,869 [DEBUG] PIL.Image: Importing EpsImagePlugin
+2026-08-15 02:43:23,871 [DEBUG] PIL.Image: Importing FitsImagePlugin
+2026-08-15 02:43:23,872 [DEBUG] PIL.Image: Importing FliImagePlugin
+2026-08-15 02:43:23,872 [DEBUG] PIL.Image: Importing FpxImagePlugin
+2026-08-15 02:43:23,873 [DEBUG] PIL.Image: Image: failed to import FpxImagePlugin: No module named 'olefile'
+2026-08-15 02:43:23,873 [DEBUG] PIL.Image: Importing FtexImagePlugin
+2026-08-15 02:43:23,874 [DEBUG] PIL.Image: Importing GbrImagePlugin
+2026-08-15 02:43:23,874 [DEBUG] PIL.Image: Importing GifImagePlugin
+2026-08-15 02:43:23,874 [DEBUG] PIL.Image: Importing GribStubImagePlugin
+2026-08-15 02:43:23,875 [DEBUG] PIL.Image: Importing Hdf5StubImagePlugin
+2026-08-15 02:43:23,875 [DEBUG] PIL.Image: Importing IcnsImagePlugin
+2026-08-15 02:43:23,876 [DEBUG] PIL.Image: Importing IcoImagePlugin
+2026-08-15 02:43:23,877 [DEBUG] PIL.Image: Importing ImImagePlugin
+2026-08-15 02:43:23,878 [DEBUG] PIL.Image: Importing ImtImagePlugin
+2026-08-15 02:43:23,879 [DEBUG] PIL.Image: Importing IptcImagePlugin
+2026-08-15 02:43:23,879 [DEBUG] PIL.Image: Importing JpegImagePlugin
+2026-08-15 02:43:23,879 [DEBUG] PIL.Image: Importing Jpeg2KImagePlugin
+2026-08-15 02:43:23,879 [DEBUG] PIL.Image: Importing McIdasImagePlugin
+2026-08-15 02:43:23,879 [DEBUG] PIL.Image: Importing MicImagePlugin
+2026-08-15 02:43:23,881 [DEBUG] PIL.Image: Image: failed to import MicImagePlugin: No module named 'olefile'
+2026-08-15 02:43:23,881 [DEBUG] PIL.Image: Importing MpegImagePlugin
+2026-08-15 02:43:23,881 [DEBUG] PIL.Image: Importing MpoImagePlugin
+2026-08-15 02:43:23,883 [DEBUG] PIL.Image: Importing MspImagePlugin
+2026-08-15 02:43:23,883 [DEBUG] PIL.Image: Importing PalmImagePlugin
+2026-08-15 02:43:23,884 [DEBUG] PIL.Image: Importing PcdImagePlugin
+2026-08-15 02:43:23,884 [DEBUG] PIL.Image: Importing PcxImagePlugin
+2026-08-15 02:43:23,884 [DEBUG] PIL.Image: Importing PdfImagePlugin
+2026-08-15 02:43:23,888 [DEBUG] PIL.Image: Importing PixarImagePlugin
+2026-08-15 02:43:23,888 [DEBUG] PIL.Image: Importing PngImagePlugin
+2026-08-15 02:43:23,888 [DEBUG] PIL.Image: Importing PpmImagePlugin
+2026-08-15 02:43:23,897 [DEBUG] PIL.Image: Importing PsdImagePlugin
+2026-08-15 02:43:23,897 [DEBUG] PIL.Image: Importing QoiImagePlugin
+2026-08-15 02:43:23,898 [DEBUG] PIL.Image: Importing SgiImagePlugin
+2026-08-15 02:43:23,898 [DEBUG] PIL.Image: Importing SpiderImagePlugin
+2026-08-15 02:43:23,899 [DEBUG] PIL.Image: Importing SunImagePlugin
+2026-08-15 02:43:23,899 [DEBUG] PIL.Image: Importing TgaImagePlugin
+2026-08-15 02:43:23,900 [DEBUG] PIL.Image: Importing TiffImagePlugin
+2026-08-15 02:43:23,900 [DEBUG] PIL.Image: Importing WebPImagePlugin
+2026-08-15 02:43:23,901 [DEBUG] PIL.Image: Importing WmfImagePlugin
+2026-08-15 02:43:23,901 [DEBUG] PIL.Image: Importing XbmImagePlugin
+2026-08-15 02:43:23,902 [DEBUG] PIL.Image: Importing XpmImagePlugin
+2026-08-15 02:43:23,903 [DEBUG] PIL.Image: Importing XVThumbImagePlugin
+2026-08-15 02:44:01,144 [INFO] gamelibrary.tray: Exiting Game Library tray

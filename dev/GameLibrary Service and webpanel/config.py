@@ -1,6 +1,6 @@
 # Local service configuration.
 # Keep your SteamGridDB API key here and do not commit a real key to a public repository.
-STEAMGRIDDB_API_KEY = ""
+STEAMGRIDDB_API_KEY = "a2bc700c7af45388526300fcf8b6c7ab"
 STEAMGRIDDB_ENABLED = bool(STEAMGRIDDB_API_KEY)
 STEAMGRIDDB_BASE_URL = "https://www.steamgriddb.com/api/v2"
 
