@@ -70,15 +70,12 @@ def _steam_search(name):
     return _steam_details(items[0].get("id")) if items and items[0].get("id") else {}
 
 
-def _norm_name(value):
-    return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
-
+def _norm_name(value): return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
 
 def _norm_path(value):
     if not value: return None
     try: return os.path.normcase(os.path.normpath(str(value))).rstrip("\\/")
     except Exception: return str(value).lower().rstrip("\\/")
-
 
 def _path_is_inside(child, parent):
     child, parent = _norm_path(child), _norm_path(parent)
@@ -90,7 +87,6 @@ def _path_is_inside(child, parent):
 def _merge_match(gd, pn):
     gd_root = Path(f"{gd['last_letter']}:\\") if gd.get("last_letter") else None
     gd_folder = (gd_root / gd["relative_path"] / "Game") if gd_root else None
-    gd_folder = str(gd_folder) if gd_folder else None
     gd_exe = None
     try:
         exe_file = Path(f"{gd['last_letter']}:\\") / gd["relative_path"] / "exepath.txt"
@@ -98,17 +94,13 @@ def _merge_match(gd, pn):
             relative = exe_file.read_text(encoding="utf-8-sig").strip().replace("/", "\\")
             if relative and not Path(relative).is_absolute() and ".." not in Path(relative).parts:
                 gd_exe = str((Path(f"{gd['last_letter']}:\\") / gd["relative_path"] / "Game" / relative).resolve())
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError): pass
     pn_install, pn_exe = pn.get("install_directory"), pn.get("executable")
     if pn_install and gd_folder and _norm_path(pn_install) == _norm_path(gd_folder): return True
     if pn_exe and gd_exe and _norm_path(pn_exe) == _norm_path(gd_exe): return True
     if pn_install and gd_folder and (_path_is_inside(pn_install, gd_folder) or _path_is_inside(gd_folder, pn_install)): return True
-    # Name-only matching is intentionally restricted to a Playnite install path
-    # on the same GameDrive partition to avoid merging unrelated same-name games.
     if _norm_name(gd["title"] or gd["name"]) == _norm_name(pn["name"]):
-        if pn_install and gd_root and _path_is_inside(pn_install, str(gd_root)):
-            return True
+        if pn_install and gd_root and _path_is_inside(pn_install, str(gd_root)): return True
     return False
 
 
@@ -121,32 +113,30 @@ def create_app(db, metadata=None, config=None, playnite=None):
         if playnite.needs_refresh(): playnite.read_games(force=True)
         return playnite.read_games()
 
-    def unified_games(query="", connected_only=False):
+    def unified_games(query="", connected_only=False, mode="playlist"):
         gd_rows = [dict(row) for row in db.search(query, connected_only)]
         pn_rows = playnite_games()
-        used = set()
-        result = []
+        used = set(); result = []
         for gd in gd_rows:
             match = next((pn for pn in pn_rows if pn["playnite_id"] not in used and _merge_match(gd, pn)), None)
-            if match:
-                used.add(match["playnite_id"])
+            if match: used.add(match["playnite_id"])
             item = dict(gd)
-            item.update({"unified_id": f"gd:{gd['id']}", "source": "gamedrive", "playnite_managed": bool(match), "playnite_id": match["playnite_id"] if match else None, "playnite_name": match["name"] if match else None, "playtime": match.get("playtime", 0) if match else 0})
+            item.update({"unified_id": f"gd:{gd['id']}", "source": "gamedrive", "playnite_managed": bool(match), "playnite_id": match["playnite_id"] if match else None, "playtime": match.get("playtime", 0) if match else 0})
             if match:
                 for field in ("cover", "hero", "logo", "description", "release_date"):
                     if match.get(field): item[field] = match[field]
-                item["installation_state"] = "Installed"
-                item["launch_source"] = "Playnite"
+                item["installation_state"], item["launch_source"] = "Installed", "Playnite"
             else:
                 item["installation_state"] = "Installed" if gd["connected"] else "Offline"
                 item["launch_source"] = "GameDrive"
             result.append(item)
-        for pn in pn_rows:
-            if pn["playnite_id"] in used: continue
-            if query and _norm_name(query) not in _norm_name(pn["name"]): continue
-            item = dict(pn)
-            item.update({"id": None, "unified_id": f"pn:{pn['playnite_id']}", "source": "playnite", "playnite_managed": True, "playnite_id": pn["playnite_id"], "title": pn["name"], "connected": True, "last_letter": Path(pn["install_directory"]).drive.rstrip(":") if pn.get("install_directory") else None, "drive_name": "Playnite", "installation_state": "Installed", "launch_source": "Playnite"})
-            result.append(item)
+        if mode != "drives":
+            for pn in pn_rows:
+                if pn["playnite_id"] in used: continue
+                if query and _norm_name(query) not in _norm_name(pn["name"]): continue
+                item = dict(pn)
+                item.update({"id": None, "unified_id": f"pn:{pn['playnite_id']}", "source": "playnite", "playnite_managed": True, "playnite_id": pn["playnite_id"], "title": pn["name"], "connected": True, "last_letter": Path(pn["install_directory"]).drive.rstrip(":") if pn.get("install_directory") else None, "drive_name": "Playnite", "installation_state": "Installed", "launch_source": "Playnite"})
+                result.append(item)
         result.sort(key=lambda x: str(x.get("title") or x.get("name") or "").lower())
         return result
 
@@ -207,16 +197,15 @@ def create_app(db, metadata=None, config=None, playnite=None):
     @app.get("/api/system/disks")
     def system_disks(): return _physical_disks()
     @app.get("/api/games")
-    def games(q: str = Query("", max_length=200), connected_only: bool = False):
-        rows = unified_games(q, connected_only)
+    def games(q: str = Query("", max_length=200), connected_only: bool = False, mode: str = Query("playlist")):
+        if mode not in ("playlist", "drives"): mode = "playlist"
+        rows = unified_games(q, connected_only, mode)
         if metadata and metadata.auto_lookup:
             for row in rows:
                 if row.get("id") is not None and not row.get("capsule"): metadata.queue_lookup(row["id"], row.get("name") or row.get("title") or "")
         return rows
     @app.get("/api/games/{game_id}")
-    def game(game_id: str):
-        item = find_unified(game_id)
-        return item or {"error": "not_found"}
+    def game(game_id: str): return find_unified(game_id) or {"error": "not_found"}
     @app.get("/api/games/{game_id}/details")
     def game_details(game_id: str):
         item = find_unified(game_id)
@@ -231,7 +220,7 @@ def create_app(db, metadata=None, config=None, playnite=None):
         try:
             if result.get("app_id"): steam = _steam_details(result["app_id"])
             elif result.get("title") or result.get("name"): steam = _steam_search(result.get("title") or result.get("name"))
-        except Exception: steam = {}
+        except Exception: pass
         result.update({k: v for k, v in steam.items() if v and not result.get(k)})
         if result.get("description"): result["description"] = html.unescape(result["description"])
         return result
@@ -239,8 +228,7 @@ def create_app(db, metadata=None, config=None, playnite=None):
     def launch_game(game_id: str):
         item = find_unified(game_id)
         if not item: return {"ok": False, "error": "not_found"}
-        if item.get("playnite_id"):
-            return playnite.launch(item["playnite_id"])
+        if item.get("playnite_id"): return playnite.launch(item["playnite_id"])
         if not item.get("connected") or not item.get("last_letter"): return {"ok": False, "error": "drive_offline"}
         drive_root = Path(f"{item['last_letter']}:\\"); game_folder = (drive_root / item["relative_path"]).resolve(); game_dir = (game_folder / "Game").resolve(); exe_file = (game_folder / "exepath.txt").resolve()
         try: exe_relative = exe_file.read_text(encoding="utf-8-sig").strip().replace("/", "\\")
@@ -248,7 +236,6 @@ def create_app(db, metadata=None, config=None, playnite=None):
         if not exe_relative or Path(exe_relative).is_absolute() or ".." in Path(exe_relative).parts: return {"ok": False, "error": "invalid_exepath"}
         executable = (game_dir / exe_relative).resolve()
         if game_dir not in executable.parents or not executable.is_file(): return {"ok": False, "error": "executable_not_found"}
-        try:
-            os.startfile(str(executable)); return {"ok": True, "path": str(executable)}
+        try: os.startfile(str(executable)); return {"ok": True, "path": str(executable)}
         except Exception as exc: return {"ok": False, "error": "launch_failed", "detail": str(exc)}
     return app
