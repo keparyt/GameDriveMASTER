@@ -59,23 +59,6 @@ def setup_logging():
     logging.getLogger("gamelibrary.service").setLevel(logging.DEBUG)
 
 
-def create_metadata_manager(config):
-    """Load SteamGridDB support without making it a hard startup dependency."""
-    log = logging.getLogger("gamelibrary.service")
-    metadata_config = config.get("metadata", {})
-
-    try:
-        # Import lazily so a missing local config.py/API key cannot prevent the
-        # actual Game Library web API from starting.
-        from .metadata import MetadataManager
-
-        metadata = MetadataManager(Database(), metadata_config)
-        return metadata
-    except Exception as exc:
-        log.exception("SteamGridDB metadata initialization failed; continuing without artwork: %s", exc)
-        return DisabledMetadataManager(str(exc))
-
-
 def main():
     setup_logging()
     log = logging.getLogger("gamelibrary.service")
@@ -102,7 +85,11 @@ def main():
 
         metadata_config = config.get("metadata", {})
         try:
+            # SteamGridDB is optional. A missing/broken local config.py or an
+            # artwork initialization error must never prevent the web API from
+            # starting.
             from .metadata import MetadataManager
+
             metadata = MetadataManager(database, metadata_config)
             log.info(
                 "Metadata manager initialized: enabled=%s auto_lookup=%s",
@@ -110,8 +97,6 @@ def main():
                 metadata.auto_lookup,
             )
         except Exception as exc:
-            # Artwork is optional. A broken/missing local SteamGridDB config must
-            # never take down the HTTP server or web panel.
             log.exception(
                 "Metadata manager initialization failed; starting API without artwork: %s",
                 exc,
