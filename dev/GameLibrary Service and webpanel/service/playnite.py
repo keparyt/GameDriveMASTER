@@ -28,6 +28,9 @@ class PlayniteBridge:
         self.refresh_on_game_drive_change = bool(
             self.config.get("refreshOnGameDriveChange", True)
         )
+        self.restart_if_api_unavailable = bool(
+            self.config.get("restartIfApiUnavailable", True)
+        )
         self.playnite_path = self._path(
             self.config.get("path") or self.config.get("playnitePath")
         ) or self._find_playnite()
@@ -39,6 +42,7 @@ class PlayniteBridge:
         self._last_refresh = 0.0
         self._last_error = None
         self._startup_attempted = False
+        self._restart_attempted = False
 
     def _path(self, value):
         if not value:
@@ -146,6 +150,40 @@ class PlayniteBridge:
         except Exception as e:
             self._last_error = str(e)
             log.warning("Could not start Playnite: %s", e)
+            return False
+
+    def restart(self):
+        """Restart Playnite once when an existing instance has no GameDrive API.
+
+        This is important after installing/replacing the GameDrive DLL: an
+        already-running Playnite process keeps the old extension set until it
+        is restarted.
+        """
+        if not self.enabled or not self.restart_if_api_unavailable:
+            return False
+        if self._restart_attempted:
+            return False
+        self._restart_attempted = True
+        if not self.playnite_path or not self.playnite_path.is_file():
+            return False
+        try:
+            if self._is_running():
+                log.info("Playnite is running without the GameDrive API; restarting it to load the current extension")
+                subprocess.run(
+                    [str(self.playnite_path), "--shutdown"],
+                    cwd=str(self.playnite_path.parent),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                deadline = time.monotonic() + 10
+                while self._is_running() and time.monotonic() < deadline:
+                    time.sleep(0.25)
+            return self._ensure_started()
+        except Exception as e:
+            self._last_error = str(e)
+            log.warning("Could not restart Playnite: %s", e)
             return False
 
     def start(self, wait_for_api=True, timeout=8):
