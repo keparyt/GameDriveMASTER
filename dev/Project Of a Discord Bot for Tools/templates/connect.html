@@ -39,14 +39,12 @@
 <div class="card">
     <div class="icon">🏠</div>
     <h1>Home LAN Connection</h1>
-    <p>This page keeps your Discord Home LAN connection active.</p>
+    <p>This page is only needed to establish your connection.</p>
     <div id="status">Connecting...</div>
 </div>
 <script>
 const statusElement = document.getElementById("status");
 const token = window.location.pathname.split("/").filter(Boolean).pop();
-let connected = false;
-let closeTimer = null;
 
 async function heartbeat() {
     try {
@@ -56,41 +54,47 @@ async function heartbeat() {
         });
         const data = await response.json();
 
-        if (data.connected) {
-            connected = true;
-            statusElement.className = "connected";
-            statusElement.textContent = "🟢 Connected to the Home LAN";
-
-            // The initial /connect request already established the connection.
-            // Give the user 3 seconds to see the confirmation, then close.
-            if (closeTimer === null) {
-                closeTimer = setTimeout(() => {
-                    window.close();
-
-                    // Browsers may refuse window.close() for a normal tab.
-                    // In that case leave a clear final message instead.
-                    setTimeout(() => {
-                        statusElement.textContent =
-                            "🟢 Connected — you can close this page now.";
-                    }, 250);
-                }, 3000);
-            }
-        } else {
-            connected = false;
+        if (!data.connected) {
             statusElement.className = "error";
             statusElement.textContent = "🔴 Connection rejected";
+            return;
         }
+
+        statusElement.className = "connected";
+        statusElement.textContent = "🟢 Connected to the Home LAN";
+
+        // The bot now checks the LAN IP itself every 5 minutes, so this page
+        // can safely close after the connection has been established.
+        let seconds = 3;
+        statusElement.textContent = `🟢 Connected — closing in ${seconds}s...`;
+
+        const countdown = setInterval(() => {
+            seconds -= 1;
+
+            if (seconds > 0) {
+                statusElement.textContent = `🟢 Connected — closing in ${seconds}s...`;
+                return;
+            }
+
+            clearInterval(countdown);
+            statusElement.textContent = "🟢 Connected — closing...";
+
+            // Browsers allow this when possible. If this tab wasn't opened
+            // by script, the browser may refuse to close it.
+            window.close();
+
+            setTimeout(() => {
+                statusElement.textContent =
+                    "🟢 Connected — you can close this page now.";
+            }, 250);
+        }, 1000);
     } catch (error) {
-        connected = false;
         statusElement.className = "error";
         statusElement.textContent = "🔴 Server connection lost";
     }
 }
 
 heartbeat();
-
-// Keep the LAN heartbeat alive every minute after the page is open.
-setInterval(heartbeat, 60 * 1000);
 </script>
 </body>
 </html>
