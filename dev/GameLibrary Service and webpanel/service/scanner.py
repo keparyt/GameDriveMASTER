@@ -54,9 +54,8 @@ def powershell_drive_value(drive, expression):
 
 
 def physical_uuid(drive):
-    # Disk UniqueId is preferred because it follows the physical disk when its
-    # drive letter changes. SerialNumber is only a fallback for older devices.
-    return powershell_drive_value(drive, "$d.UniqueId")
+    unique_id = powershell_drive_value(drive, "$d.UniqueId")
+    return unique_id
 
 
 def physical_serial(drive):
@@ -117,7 +116,9 @@ class Scanner:
         drive_id_value = self.db.upsert_drive(uid, info["name"], info["description"], drive[0])
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
-            self.db.remove_missing_games(drive_id_value, set())
+            # Do not delete the previously indexed library just because the
+            # drive is temporarily unavailable or its folder is inaccessible.
+            log.warning("Game folder unavailable on %s; keeping existing indexed games", drive)
             return True
 
         seen_paths = set()
@@ -129,7 +130,9 @@ class Scanner:
                 seen_paths.add(relative_path)
                 self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
         except OSError as exc:
-            log.warning("Cannot scan %s: %s", games_root, exc)
+            # A partial filesystem read must never erase the library.
+            log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
+            return True
 
         self.db.remove_missing_games(drive_id_value, seen_paths)
         return True
