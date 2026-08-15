@@ -11,6 +11,7 @@ from config import (
     LAN_NETWORK,
     HOME_ROLE_ID,
     LAN_CONNECTION_TIMEOUT,
+    MASTER_ID,
 )
 
 from server.connections import ConnectionManager
@@ -27,6 +28,8 @@ class Bot(commands.Bot):
             intents=intents,
         )
 
+        self.master_id = MASTER_ID
+
         self.connection_manager = ConnectionManager(
             self,
             role_id=HOME_ROLE_ID,
@@ -39,7 +42,6 @@ class Bot(commands.Bot):
     async def setup_hook(self):
         log("Loading commands...")
 
-        await self.load_extension("commands.admin")
         await self.load_extension("commands.connection")
 
         log("Loading events...")
