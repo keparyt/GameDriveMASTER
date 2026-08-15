@@ -65,12 +65,7 @@ class Database:
             self.conn.commit()
 
     def upsert_drive(self, uuid, name, description, letter, legacy_uuid=None):
-        """Create/update one GameDrive partition.
-
-        Partition identity is used so multiple partitions on one physical disk
-        stay as separate GameDrive collections. legacy_uuid keeps old libraries
-        indexed when upgrading from the previous physical-disk identity model.
-        """
+        """Create/update one GameDrive partition."""
         timestamp = now()
         with self.lock:
             row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
@@ -78,7 +73,6 @@ class Database:
                 row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (legacy_uuid,)).fetchone()
                 if row:
                     self.conn.execute("UPDATE drives SET uuid=? WHERE id=?", (uuid, row["id"]))
-
             if row:
                 drive_id = row["id"]
                 self.conn.execute(
@@ -142,7 +136,7 @@ class Database:
             """, (game_id,)).fetchone()
 
     def set_metadata(self, data_game_id, data):
-        """Save metadata only while the game row still exists."""
+        """Replace metadata for a game, used for the final completed result."""
         with self.lock:
             game = self.conn.execute("SELECT id FROM games WHERE id=?", (data_game_id,)).fetchone()
             if not game:
@@ -154,6 +148,29 @@ class Database:
                     logo=excluded.logo,hero=excluded.hero,cover=excluded.cover,release_date=excluded.release_date,
                     description=excluded.description,updated_at=excluded.updated_at
             """, (data_game_id,data.get("title"),data.get("app_id"),data.get("capsule"),data.get("logo"),data.get("hero"),data.get("cover"),data.get("release_date"),data.get("description"),now()))
+            self.conn.commit()
+            return True
+
+    def update_metadata_fields(self, data_game_id, data):
+        """Merge newly downloaded artwork into existing metadata immediately."""
+        with self.lock:
+            game = self.conn.execute("SELECT id FROM games WHERE id=?", (data_game_id,)).fetchone()
+            if not game:
+                return False
+            current = self.conn.execute("SELECT * FROM metadata WHERE game_id=?", (data_game_id,)).fetchone()
+            fields = ["title", "app_id", "capsule", "logo", "hero", "cover", "release_date", "description"]
+            values = {field: (current[field] if current else None) for field in fields}
+            for field in fields:
+                if data.get(field) is not None:
+                    values[field] = data[field]
+            self.conn.execute("""
+                INSERT INTO metadata (game_id,title,app_id,capsule,logo,hero,cover,release_date,description,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(game_id) DO UPDATE SET
+                    title=excluded.title,app_id=excluded.app_id,capsule=excluded.capsule,logo=excluded.logo,
+                    hero=excluded.hero,cover=excluded.cover,release_date=excluded.release_date,
+                    description=excluded.description,updated_at=excluded.updated_at
+            """, (data_game_id, values["title"], values["app_id"], values["capsule"], values["logo"], values["hero"], values["cover"], values["release_date"], values["description"], now()))
             self.conn.commit()
             return True
 
