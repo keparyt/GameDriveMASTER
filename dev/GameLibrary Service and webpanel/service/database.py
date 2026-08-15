@@ -64,15 +64,32 @@ class Database:
             self.conn.execute("UPDATE drives SET connected=0")
             self.conn.commit()
 
-    def upsert_drive(self, uuid, name, description, letter):
+    def upsert_drive(self, uuid, name, description, letter, legacy_uuid=None):
+        """Create/update one GameDrive partition.
+
+        Partition identity is used so multiple partitions on one physical disk
+        stay as separate GameDrive collections. legacy_uuid keeps old libraries
+        indexed when upgrading from the previous physical-disk identity model.
+        """
         timestamp = now()
         with self.lock:
             row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
+            if not row and legacy_uuid:
+                row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (legacy_uuid,)).fetchone()
+                if row:
+                    self.conn.execute("UPDATE drives SET uuid=? WHERE id=?", (uuid, row["id"]))
+
             if row:
                 drive_id = row["id"]
-                self.conn.execute("UPDATE drives SET name=?, description=?, last_letter=?, connected=1, last_seen=? WHERE id=?", (name, description, letter, timestamp, drive_id))
+                self.conn.execute(
+                    "UPDATE drives SET name=?, description=?, last_letter=?, connected=1, last_seen=? WHERE id=?",
+                    (name, description, letter, timestamp, drive_id),
+                )
             else:
-                cursor = self.conn.execute("INSERT INTO drives (uuid,name,description,last_letter,connected,first_seen,last_seen) VALUES (?,?,?,?,1,?,?)", (uuid, name, description, letter, timestamp, timestamp))
+                cursor = self.conn.execute(
+                    "INSERT INTO drives (uuid,name,description,last_letter,connected,first_seen,last_seen) VALUES (?,?,?,?,1,?,?)",
+                    (uuid, name, description, letter, timestamp, timestamp),
+                )
                 drive_id = cursor.lastrowid
             self.conn.commit()
             return drive_id
@@ -125,13 +142,7 @@ class Database:
             """, (game_id,)).fetchone()
 
     def set_metadata(self, data_game_id, data):
-        """Save metadata only while the game row still exists.
-
-        The artwork worker runs asynchronously while the scanner can delete games
-        that disappeared from a drive. A queued lookup may therefore finish after
-        its game was removed. Treat that as a stale lookup instead of raising a
-        foreign-key error.
-        """
+        """Save metadata only while the game row still exists."""
         with self.lock:
             game = self.conn.execute("SELECT id FROM games WHERE id=?", (data_game_id,)).fetchone()
             if not game:
