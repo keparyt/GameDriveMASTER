@@ -60,11 +60,9 @@ class Database:
             self.conn.commit()
 
     def mark_disconnected(self):
-        """Deprecated compatibility method. Scans must not use it."""
         return 0
 
     def apply_drive_scan(self, uuid, name, description, letter, games, legacy_uuid=None):
-        """Commit one fully completed drive scan as one transaction."""
         timestamp = now()
         with self.lock:
             row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
@@ -96,27 +94,36 @@ class Database:
                         name=excluded.name,last_seen=excluded.last_seen
                 """, (drive_id, game["name"], relative_path, timestamp, timestamp))
 
-            rows = self.conn.execute(
-                "SELECT id,relative_path FROM games WHERE drive_id=?", (drive_id,)
-            ).fetchall()
+            rows = self.conn.execute("SELECT id,relative_path FROM games WHERE drive_id=?", (drive_id,)).fetchall()
             for game in rows:
                 if game["relative_path"] not in seen_paths:
                     self.conn.execute("DELETE FROM games WHERE id=?", (game["id"],))
-
             self.conn.commit()
             return drive_id
 
-    def apply_scan_connectivity(self, discovered_uuids):
-        """Apply connectivity only after a complete discovery pass succeeds."""
+    def apply_scan_connectivity(self, discovered_uuids, observed_letters):
+        """Apply connectivity only from a completed scan.
+
+        A known drive whose mount letter is still present but whose GameDrive scan
+        failed is preserved. A drive is marked offline only when its previous
+        mount is absent from the completed OS drive-discovery result.
+        """
         discovered = set(discovered_uuids or ())
-        if not discovered:
+        observed = {str(letter).rstrip("\\").upper()[:1] for letter in (observed_letters or [])}
+        if not observed:
             return 0
         timestamp = now()
         with self.lock:
-            rows = self.conn.execute("SELECT id,uuid,connected FROM drives").fetchall()
+            rows = self.conn.execute("SELECT id,uuid,last_letter,connected FROM drives").fetchall()
             changed = 0
             for row in rows:
-                new_state = 1 if row["uuid"] in discovered else 0
+                previous_letter = str(row["last_letter"] or "").upper()[:1]
+                if row["uuid"] in discovered:
+                    new_state = 1
+                elif previous_letter and previous_letter not in observed:
+                    new_state = 0
+                else:
+                    new_state = int(bool(row["connected"]))
                 if int(bool(row["connected"])) != new_state:
                     changed += 1
                 self.conn.execute(
