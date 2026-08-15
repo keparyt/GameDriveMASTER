@@ -109,8 +109,6 @@ class MetadataManager:
         log.debug("SteamGridDB artwork request: category=%s id=%s", category, sgdb_id)
         response = self.session.get(url, timeout=15)
         log.debug("SteamGridDB artwork response: HTTP %s", response.status_code)
-        # A game simply having no logo is normal. Do not make it look like a
-        # service failure, and let the other artwork types continue.
         if response.status_code == 400 and category == "logos":
             log.info("SteamGridDB: no logo artwork available for %r", game_name)
             return None
@@ -145,43 +143,49 @@ class MetadataManager:
             game_dir = self.cache_dir / safe_name
             game_dir.mkdir(parents=True, exist_ok=True)
             log.info("SteamGridDB match: %r -> id=%s name=%r", game_name, sgdb_id, matched_name)
-            assets = {"capsule": ("grids", "capsule"), "hero": ("heroes", "hero"), "logo": ("logos", "logo"), "cover": ("grids", "cover")}
+
+            # Download the capsule first so the most visible artwork becomes
+            # available as soon as possible. Each completed asset is published
+            # to SQLite immediately; the web panel can pick it up on its next
+            # background poll without requiring a page refresh.
+            assets = [
+                ("capsule", "grids", "capsule"),
+                ("hero", "heroes", "hero"),
+                ("logo", "logos", "logo"),
+                ("cover", "grids", "cover"),
+            ]
             paths = {}
-            for field, (category, filename) in assets.items():
+            for field, category, filename in assets:
                 if self._auth_failed:
                     break
                 try:
                     url = self._artwork_url(category, sgdb_id, game_name)
-                    if url:
-                        extension = ".png" if ".png" in url.lower() else ".jpg"
-                        destination = game_dir / f"{filename}{extension}"
-                        self._download(url, destination)
-                        paths[field] = f"/artwork/{safe_name}/{destination.name}"
-                        log.info("Artwork ready: %s=%s", field, paths[field])
+                    if not url:
+                        continue
+                    extension = ".png" if ".png" in url.lower() else ".jpg"
+                    destination = game_dir / f"{filename}{extension}"
+                    self._download(url, destination)
+                    path = f"/artwork/{safe_name}/{destination.name}"
+                    paths[field] = path
+
+                    # Publish this single asset immediately. Existing metadata
+                    # fields are preserved by update_metadata_fields().
+                    saved = self.db.update_metadata_fields(game_id, {
+                        "title": matched_name,
+                        "app_id": str(sgdb_id) if sgdb_id is not None else None,
+                        field: path,
+                    })
+                    if not saved:
+                        log.debug("Metadata result discarded: game id=%s no longer exists", game_id)
+                        return None
+                    log.info("Artwork ready: %s=%s", field, path)
                 except requests.RequestException as exc:
                     log.warning("SteamGridDB %s artwork failed for %r: %s", field, game_name, exc)
+
             if self._auth_failed:
                 return None
-            saved = self.db.set_metadata(game_id, {
-                "title": matched_name,
-                "app_id": str(sgdb_id) if sgdb_id is not None else None,
-                "capsule": paths.get("capsule"),
-                "logo": paths.get("logo"),
-                "hero": paths.get("hero"),
-                "cover": paths.get("cover"),
-                "release_date": None,
-                "description": None
-            })
-            if not saved:
-                # The scanner removed this game while the worker was downloading
-                # its artwork. This is expected for a stale asynchronous lookup.
-                log.debug("Metadata result discarded: game id=%s no longer exists", game_id)
-                return None
             row = self.db.get_game(game_id)
-            if row is None:
-                log.debug("Metadata result became stale after save: game id=%s", game_id)
-                return None
-            return dict(row)
+            return dict(row) if row else None
         except requests.RequestException as exc:
             log.warning("SteamGridDB request failed for id=%s name=%r: %s", game_id, game_name, exc)
             return None
