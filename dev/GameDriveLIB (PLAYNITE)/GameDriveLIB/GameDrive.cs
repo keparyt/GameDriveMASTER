@@ -11,16 +11,11 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
-using System.Text;
 
 public class GameDriveLibrary : LibraryPlugin
 {
     private readonly IPlayniteAPI api;
     private static readonly ILogger logger = LogManager.GetLogger();
-
-    // Fallback key used if GameDrive.ini doesn't specify one under [SteamGridDB] api_key=...
-    // For safety/quota reasons, put your own key in the ini instead of relying on this default.
-    private const string DefaultSteamGridDbKey = "a2bc700c7af45388526300fcf8b6c7ab";
 
     public override Guid Id { get; } =
         Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
@@ -69,12 +64,21 @@ public class GameDriveLibrary : LibraryPlugin
                 continue;
             }
 
-            string apiKey = DefaultSteamGridDbKey;
-            if (ini.Sections.ContainsSection("SteamGridDB") && !string.IsNullOrWhiteSpace(ini["SteamGridDB"]["api_key"]))
+            string apiKey = null;
+            if (ini.Sections.ContainsSection("SteamGridDB"))
             {
                 apiKey = ini["SteamGridDB"]["api_key"];
             }
-            var sgdb = new SteamGridDbClient(apiKey, logger);
+
+            SteamGridDbClient sgdb = null;
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                sgdb = new SteamGridDbClient(apiKey.Trim(), logger);
+            }
+            else
+            {
+                logger.Info("GameDrive: SteamGridDB API key is not configured; artwork download is disabled.");
+            }
 
             foreach (var key in ini["Directories"])
             {
@@ -125,7 +129,8 @@ public class GameDriveLibrary : LibraryPlugin
                         Name = name,
                         GameId = name,
                         InstallDirectory = Path.Combine(gameFolder, "Game"),
-                        IsInstalled = true
+                        IsInstalled = true,
+                        Categories = new HashSet<MetadataProperty>()
                     };
 
                     metadata.GameActions = new List<GameAction>()
@@ -139,9 +144,14 @@ public class GameDriveLibrary : LibraryPlugin
                         }
                     };
 
-                    EnsureMediaAssets(gameFolder, name, metadata, sgdb, logger);
-
-                    metadata.Categories = new HashSet<MetadataProperty>();
+                    if (sgdb != null)
+                    {
+                        EnsureMediaAssets(gameFolder, name, metadata, sgdb, logger);
+                    }
+                    else
+                    {
+                        ApplyExistingMedia(gameFolder, metadata);
+                    }
 
                     games.Add(metadata);
                 }
@@ -152,23 +162,19 @@ public class GameDriveLibrary : LibraryPlugin
         return games;
     }
 
-    // Downloads Capsule.png (cover), Hero.png (widescreen background) and Icon.png
-    // for a game from SteamGridDB if they aren't already cached in the game folder,
-    // then wires them into the game's metadata. Each asset is only fetched once;
-    // once a file exists locally, it's reused on every future scan.
     private void EnsureMediaAssets(string gameFolder, string gameName, GameMetadata metadata, SteamGridDbClient sgdb, ILogger logger)
     {
-        string capsulePath = Path.Combine(gameFolder, "Capsule.png");   // portrait cover, used in grid view
-        string heroPath = Path.Combine(gameFolder, "Hero.png");        // widescreen background, used in full screen mode
-        string iconPath = Path.Combine(gameFolder, "Icon.png");        // square icon, used in lists/taskbar
+        string capsulePath = Path.Combine(gameFolder, "Capsule.png");
+        string heroPath = Path.Combine(gameFolder, "Hero.png");
+        string iconPath = Path.Combine(gameFolder, "Icon.png");
 
         bool needCapsule = !File.Exists(capsulePath);
         bool needHero = !File.Exists(heroPath);
         bool needIcon = !File.Exists(iconPath);
 
+        int? gameId = null;
         if (needCapsule || needHero || needIcon)
         {
-            int? gameId = null;
             try
             {
                 gameId = sgdb.SearchGameId(gameName);
@@ -185,23 +191,33 @@ public class GameDriveLibrary : LibraryPlugin
             else
             {
                 if (needCapsule)
-                {
                     TryDownload(sgdb, "grids", gameId.Value, "600x900", capsulePath, logger, "capsule");
-                }
+
                 if (needHero)
-                {
                     TryDownload(sgdb, "heroes", gameId.Value, "1920x620", heroPath, logger, "hero/background");
-                }
+
                 if (needIcon)
-                {
                     TryDownload(sgdb, "icons", gameId.Value, null, iconPath, logger, "icon");
-                }
             }
         }
 
-        if (File.Exists(capsulePath)) metadata.CoverImage = new MetadataFile(capsulePath);
-        if (File.Exists(heroPath)) metadata.BackgroundImage = new MetadataFile(heroPath);
-        if (File.Exists(iconPath)) metadata.Icon = new MetadataFile(iconPath);
+        ApplyExistingMedia(gameFolder, metadata);
+    }
+
+    private void ApplyExistingMedia(string gameFolder, GameMetadata metadata)
+    {
+        string capsulePath = Path.Combine(gameFolder, "Capsule.png");
+        string heroPath = Path.Combine(gameFolder, "Hero.png");
+        string iconPath = Path.Combine(gameFolder, "Icon.png");
+
+        if (File.Exists(capsulePath))
+            metadata.CoverImage = new MetadataFile(capsulePath);
+
+        if (File.Exists(heroPath))
+            metadata.BackgroundImage = new MetadataFile(heroPath);
+
+        if (File.Exists(iconPath))
+            metadata.Icon = new MetadataFile(iconPath);
     }
 
     private void TryDownload(SteamGridDbClient sgdb, string category, int gameId, string dimensions, string destPath, ILogger logger, string label)
@@ -209,7 +225,7 @@ public class GameDriveLibrary : LibraryPlugin
         try
         {
             string url = sgdb.GetImageUrl(category, gameId, dimensions);
-            if (url == null)
+            if (string.IsNullOrWhiteSpace(url))
             {
                 logger.Warn($"GameDrive: no {label} found on SteamGridDB for game id {gameId}.");
                 return;
@@ -225,11 +241,11 @@ public class GameDriveLibrary : LibraryPlugin
     }
 }
 
-// Minimal SteamGridDB REST client (https://www.steamgriddb.com/api/v2).
-// Only uses what's needed here: search, grids, heroes, icons.
+// Minimal SteamGridDB REST client.
+// Uses the v2 API for game search and artwork retrieval.
 public class SteamGridDbClient
 {
-    private static readonly HttpClient http = new HttpClient();
+    private static readonly HttpClient http = CreateHttpClient();
     private readonly string apiKey;
     private readonly ILogger logger;
 
@@ -237,6 +253,14 @@ public class SteamGridDbClient
     {
         this.apiKey = apiKey;
         this.logger = logger;
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        var client = new HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(20);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("GameDrive/1.0");
+        return client;
     }
 
     private HttpRequestMessage BuildRequest(string url)
@@ -265,29 +289,35 @@ public class SteamGridDbClient
         string url = "https://www.steamgriddb.com/api/v2/search/autocomplete/" + Uri.EscapeDataString(gameName);
         var result = SendAndParse<SgdbListResponse<SgdbGame>>(url);
 
-        if (result?.Data != null && result.Data.Count > 0)
-        {
-            return result.Data[0].Id;
-        }
+        if (result?.Data == null || result.Data.Count == 0)
+            return null;
 
-        return null;
+        // Prefer an exact title match so similarly named games don't receive the wrong artwork.
+        var exact = result.Data.FirstOrDefault(x =>
+            string.Equals(Normalize(x.Name), Normalize(gameName), StringComparison.OrdinalIgnoreCase));
+
+        return (exact ?? result.Data[0]).Id;
     }
 
-    // category: "grids", "heroes", or "icons". dimensions is optional (e.g. "600x900").
+    private static string Normalize(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var chars = value.Where(char.IsLetterOrDigit).ToArray();
+        return new string(chars).ToLowerInvariant();
+    }
+
     public string GetImageUrl(string category, int gameId, string dimensions)
     {
         string url = $"https://www.steamgriddb.com/api/v2/{category}/game/{gameId}?mimes=image/png";
         if (!string.IsNullOrEmpty(dimensions))
-        {
-            url += "&dimensions=" + dimensions;
-        }
+            url += "&dimensions=" + Uri.EscapeDataString(dimensions);
 
         var result = SendAndParse<SgdbListResponse<SgdbImage>>(url);
 
         if (result?.Data != null && result.Data.Count > 0)
-        {
             return result.Data[0].Url;
-        }
 
         return null;
     }
@@ -298,7 +328,18 @@ public class SteamGridDbClient
         {
             response.EnsureSuccessStatusCode();
             var bytes = response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
-            File.WriteAllBytes(destPath, bytes);
+
+            string directory = Path.GetDirectoryName(destPath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            string tempPath = destPath + ".tmp";
+            File.WriteAllBytes(tempPath, bytes);
+
+            if (File.Exists(destPath))
+                File.Delete(destPath);
+
+            File.Move(tempPath, destPath);
         }
     }
 }
