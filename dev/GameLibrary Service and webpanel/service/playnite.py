@@ -81,7 +81,11 @@ class PlayniteBridge:
             return False
         try:
             response = self._request("/health", timeout=1.5)
-            return bool(response.get("ok")) and response.get("source") == "PlayniteApi.Database.Games"
+            return (
+                bool(response.get("ok"))
+                and response.get("source") == "PlayniteApi.Database.Games"
+                and bool(response.get("ready"))
+            )
         except Exception:
             return False
 
@@ -250,9 +254,6 @@ class PlayniteBridge:
                 log.info("Playnite API library read: %d installed game(s)", len(games))
                 return list(games)
             except Exception as e:
-                # Playnite can take a while to finish loading extensions. Do
-                # not permanently disable integration after the first failed
-                # request; every later scanner cycle can recover automatically.
                 if self._ensure_started():
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
@@ -313,8 +314,6 @@ class PlayniteBridge:
                     time.sleep(0.25)
                 hwnd = self._window()
             if hwnd:
-                # F5 is Playnite's normal library refresh command. This keeps
-                # refresh behavior inside Playnite rather than modifying its DB.
                 u = ctypes.windll.user32
                 u.PostMessageW(hwnd, 0x0100, 0x74, 0)
                 u.PostMessageW(hwnd, 0x0101, 0x74, 0)
