@@ -44,9 +44,7 @@ def _steam_details(app_id):
         movie = movies[0]
         trailer = (movie.get("mp4") or {}).get("max") or (movie.get("mp4") or {}).get("480")
         if not trailer: trailer = (movie.get("webm") or {}).get("max") or (movie.get("webm") or {}).get("480")
-    return {"title": data.get("name"), "description": data.get("short_description") or data.get("detailed_description"),
-            "release_date": (data.get("release_date") or {}).get("date"), "hero": data.get("background_raw") or data.get("background"),
-            "capsule": data.get("header_image"), "trailer": trailer, "steam_url": f"https://store.steampowered.com/app/{app_id}/"}
+    return {"title": data.get("name"), "description": data.get("short_description") or data.get("detailed_description"), "release_date": (data.get("release_date") or {}).get("date"), "hero": data.get("background_raw") or data.get("background"), "capsule": data.get("header_image"), "trailer": trailer, "steam_url": f"https://store.steampowered.com/app/{app_id}/"}
 
 
 def _steam_search(name):
