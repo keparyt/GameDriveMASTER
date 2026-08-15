@@ -17,24 +17,42 @@ CONFIG_PATH = BASE_DIR / "config.json"
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+
 class DisabledMetadataManager:
     enabled = False
     auto_lookup = False
+
     def __init__(self, reason=None):
         import queue
         self._queue = queue.Queue()
         self.reason = reason
-    def queue_lookup(self, game_id, game_name): return False
-    def stop(self): return None
+
+    def queue_lookup(self, game_id, game_name):
+        return False
+
+    def stop(self):
+        return None
+
 
 def load_config():
-    if not CONFIG_PATH.exists(): raise FileNotFoundError(f"Missing config.json: {CONFIG_PATH}")
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Missing config.json: {CONFIG_PATH}")
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
+
 def setup_logging():
-    handlers = [logging.FileHandler(LOG_DIR / "service.log", encoding="utf-8"), logging.StreamHandler(sys.stdout)]
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=handlers, force=True)
+    handlers = [
+        logging.FileHandler(LOG_DIR / "service.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ]
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
+    )
     logging.getLogger("gamelibrary.service").setLevel(logging.DEBUG)
+
 
 def main():
     setup_logging()
@@ -47,13 +65,41 @@ def main():
         database = Database()
         scanner = Scanner(database, config)
         playnite = PlayniteBridge(config.get("playnite", {}))
+
         if playnite.enabled:
+            # Do not block the Game Library HTTP server waiting for Playnite.
+            # Playnite loads extensions asynchronously, so its GameDrive API
+            # may become available several seconds after the process starts.
             try:
-                # Playnite must be running before the bridge is considered
-                # available because the GameDrive Playnite DLL owns the API.
-                playnite.start(wait_for_api=True, timeout=8)
+                playnite.start(wait_for_api=False)
             except Exception:
-                log.exception("Playnite startup failed; continuing with Playnite integration disabled until it becomes available")
+                log.exception("Playnite startup failed; continuing and retrying in background")
+
+            def wait_for_playnite_api():
+                deadline = __import__("time").monotonic() + 60
+                logged_wait = False
+                while not stop_event.is_set() and __import__("time").monotonic() < deadline:
+                    try:
+                        if playnite.available:
+                            log.info("GameDrive Playnite API is ready")
+                            playnite.refresh(force=True)
+                            return
+                        if not logged_wait:
+                            log.info("Waiting for GameDrive Playnite API to become ready...")
+                            logged_wait = True
+                        playnite.start(wait_for_api=False)
+                    except Exception:
+                        log.exception("Playnite readiness check failed")
+                    stop_event.wait(0.5)
+                if not stop_event.is_set():
+                    log.warning("GameDrive Playnite API did not become ready within 60 seconds")
+
+            threading.Thread(
+                target=wait_for_playnite_api,
+                daemon=True,
+                name="PlayniteStartup",
+            ).start()
+
         log.info(
             "Playnite bridge: enabled=%s available=%s executable=%s library=%s",
             playnite.enabled,
@@ -61,9 +107,7 @@ def main():
             playnite.playnite_path,
             playnite.library_path,
         )
-        if playnite.enabled:
-            try: playnite.refresh(force=True)
-            except Exception: log.exception("Initial Playnite refresh failed; continuing without Playnite")
+
         try:
             from .metadata import MetadataManager
             metadata = MetadataManager(database, config.get("metadata", {}))
@@ -73,9 +117,16 @@ def main():
 
         def drive_signature():
             with database.lock:
-                drives = database.conn.execute("SELECT uuid,name,last_letter,connected FROM drives ORDER BY uuid").fetchall()
-                games = database.conn.execute("SELECT drive_id,relative_path,name FROM games ORDER BY drive_id,relative_path").fetchall()
-            return tuple((r["uuid"], r["name"], r["last_letter"], bool(r["connected"])) for r in drives), tuple((r["drive_id"], r["relative_path"], r["name"]) for r in games)
+                drives = database.conn.execute(
+                    "SELECT uuid,name,last_letter,connected FROM drives ORDER BY uuid"
+                ).fetchall()
+                games = database.conn.execute(
+                    "SELECT drive_id,relative_path,name FROM games ORDER BY drive_id,relative_path"
+                ).fetchall()
+            return (
+                tuple((r["uuid"], r["name"], r["last_letter"], bool(r["connected"])) for r in drives),
+                tuple((r["drive_id"], r["relative_path"], r["name"]) for r in games),
+            )
 
         def scan_loop():
             interval = max(2, int(config.get("scan_interval_seconds", 10)))
@@ -91,9 +142,11 @@ def main():
                             playnite.refresh(force=True)
                     else:
                         playnite.read_games()
+
                     if metadata.enabled and metadata.auto_lookup:
                         for row in database.search(connected_only=True):
-                            if not row["capsule"]: metadata.queue_lookup(row["id"], row["name"])
+                            if not row["capsule"]:
+                                metadata.queue_lookup(row["id"], row["name"])
                 except Exception:
                     log.exception("Scanner cycle failed")
                 stop_event.wait(interval)
@@ -110,10 +163,16 @@ def main():
     finally:
         stop_event.set()
         if metadata is not None:
-            try: metadata.stop()
-            except Exception: log.exception("Metadata shutdown failed")
+            try:
+                metadata.stop()
+            except Exception:
+                log.exception("Metadata shutdown failed")
         if database is not None:
-            try: database.close()
-            except Exception: log.exception("Database close failed")
+            try:
+                database.close()
+            except Exception:
+                log.exception("Database close failed")
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
