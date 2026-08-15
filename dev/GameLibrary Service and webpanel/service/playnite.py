@@ -31,6 +31,9 @@ class PlayniteBridge:
         self.playnite_path = self._path(
             self.config.get("path") or self.config.get("playnitePath")
         ) or self._find_playnite()
+        self.library_path = self._path(
+            self.config.get("libraryPath") or self.config.get("library_path")
+        ) or self._default_library_path()
         self._lock = threading.RLock()
         self._games = []
         self._last_refresh = 0.0
@@ -44,6 +47,12 @@ class PlayniteBridge:
         if not p.is_absolute():
             p = (Path(__file__).resolve().parent.parent / p).resolve()
         return p
+
+    def _default_library_path(self):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "Playnite" / "library"
+        return None
 
     def _find_playnite(self):
         candidates = [
@@ -75,6 +84,7 @@ class PlayniteBridge:
             "enabled": self.enabled,
             "available": self.available,
             "playnite_path": str(self.playnite_path) if self.playnite_path else None,
+            "library_path": str(self.library_path) if self.library_path else None,
             "library_source": "PlayniteApi.Database.Games",
             "last_refresh": self._last_refresh,
             "error": self._last_error,
@@ -93,8 +103,30 @@ class PlayniteBridge:
             raise RuntimeError(data.get("error") or "Playnite API request failed")
         return data
 
+    def _is_running(self):
+        if os.name != "nt":
+            return False
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Playnite.DesktopApp.exe", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return "Playnite.DesktopApp.exe" in result.stdout
+        except Exception:
+            return False
+
     def _ensure_started(self):
-        if not self.enabled or not self.playnite_path or not self.playnite_path.is_file():
+        if not self.enabled:
+            return False
+        if self._is_running():
+            self._startup_attempted = True
+            return True
+        if not self.playnite_path or not self.playnite_path.is_file():
+            self._last_error = "Playnite executable not found"
+            log.warning("Playnite executable not found: %s", self.playnite_path)
             return False
         try:
             subprocess.Popen(
@@ -106,11 +138,28 @@ class PlayniteBridge:
                 stderr=subprocess.DEVNULL,
             )
             self._startup_attempted = True
+            log.info("Started Playnite: %s", self.playnite_path)
             return True
         except Exception as e:
             self._last_error = str(e)
             log.warning("Could not start Playnite: %s", e)
             return False
+
+    def start(self, wait_for_api=True, timeout=8):
+        """Ensure Playnite is running before the Game Library API starts."""
+        if not self.enabled:
+            return False
+        if not self._ensure_started():
+            return False
+        if not wait_for_api:
+            return True
+        deadline = time.monotonic() + max(0, timeout)
+        while time.monotonic() < deadline:
+            if self.available:
+                return True
+            time.sleep(0.25)
+        log.warning("Playnite process started, but GameDrive Playnite API is not ready yet")
+        return self._is_running()
 
     def _action(self, game):
         executable = game.get("executable") or ""
@@ -211,8 +260,9 @@ class PlayniteBridge:
         if not self.enabled:
             return False
         try:
+            self._ensure_started()
             hwnd = self._window()
-            if not hwnd and self._ensure_started():
+            if not hwnd and self._is_running():
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline and not self._window():
                     time.sleep(0.25)
@@ -236,8 +286,9 @@ class PlayniteBridge:
         if not self.enabled or not self.playnite_path or not self.playnite_path.is_file():
             return {"ok": False, "error": "playnite_unavailable"}
         try:
-            if not self._window():
-                self._ensure_started()
+            if not self._is_running():
+                if not self._ensure_started():
+                    return {"ok": False, "error": "playnite_start_failed"}
                 time.sleep(0.5)
             subprocess.Popen(
                 [str(self.playnite_path), "--start", str(playnite_id)],
