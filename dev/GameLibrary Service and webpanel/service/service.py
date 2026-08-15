@@ -85,9 +85,6 @@ def main():
 
         metadata_config = config.get("metadata", {})
         try:
-            # SteamGridDB is optional. A missing/broken local config.py or an
-            # artwork initialization error must never prevent the web API from
-            # starting.
             from .metadata import MetadataManager
 
             metadata = MetadataManager(database, metadata_config)
@@ -130,7 +127,7 @@ def main():
         thread = threading.Thread(target=scan_loop, daemon=True, name="GameScanner")
         thread.start()
 
-        app = create_app(database, metadata)
+        app = create_app(database, metadata, config)
         host = config.get("api_host", "127.0.0.1")
         port = int(config.get("api_port", 8765))
         log.info("Game Library API running at http://%s:%s", host, port)
