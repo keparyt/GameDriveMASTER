@@ -47,7 +47,13 @@ def main():
         database = Database()
         scanner = Scanner(database, config)
         playnite = PlayniteBridge(config.get("playnite", {}))
-        log.info("Playnite bridge: enabled=%s available=%s library=%s", playnite.enabled, playnite.available, playnite.library_path)
+        log.info(
+            "Playnite bridge: enabled=%s available=%s path=%s source=%s",
+            playnite.enabled,
+            playnite.available,
+            playnite.playnite_path,
+            "PlayniteApi.Database.Games",
+        )
         if playnite.enabled:
             try: playnite.refresh(force=True)
             except Exception: log.exception("Initial Playnite refresh failed; continuing without Playnite")
