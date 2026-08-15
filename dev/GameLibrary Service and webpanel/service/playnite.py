@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import subprocess
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -23,6 +22,7 @@ class PlayniteBridge:
         self.library_path = self._path(
             self.config.get("libraryPath") or self.config.get("library_path") or self.config.get("databasePath")
         ) or self._find_library()
+        self.litedb_path = self._path(self.config.get("liteDbPath") or self.config.get("litedbPath"))
         self._lock = threading.RLock()
         self._games = []
         self._signature = None
@@ -76,6 +76,7 @@ class PlayniteBridge:
             "playnite_path": str(self.playnite_path) if self.playnite_path else None,
             "library_path": str(self.library_path) if self.library_path else None,
             "database_path": str(self.database_file) if self.database_file else None,
+            "litedb_path": str(self.litedb_path) if self.litedb_path else None,
             "last_refresh": self._last_refresh,
             "error": self._last_error,
             "game_count": len(self._games),
@@ -165,62 +166,75 @@ class PlayniteBridge:
         }
 
     def _litedb_dll(self):
+        if self.litedb_path and self.litedb_path.is_file():
+            return self.litedb_path
         if not self.playnite_path:
             return None
-        roots = [self.playnite_path.parent, self.playnite_path.parent / "Libraries"]
+        roots = [
+            self.playnite_path.parent,
+            self.playnite_path.parent / "Libraries",
+            self.playnite_path.parent / "lib",
+        ]
+        # Playnite installs LiteDB with the application, but the exact subfolder
+        # differs between versions. Search the install tree instead of assuming
+        # one fixed path.
         for root in roots:
             try:
-                matches = list(root.rglob("LiteDB.dll"))
-                if matches:
-                    return matches[0]
+                for p in root.rglob("LiteDB.dll"):
+                    if p.is_file():
+                        self.litedb_path = p
+                        return p
             except OSError:
                 pass
         return None
 
+    @staticmethod
+    def _ps_quote(path):
+        # PowerShell single-quoted string escaping.
+        return str(path).replace("'", "''")
+
     def _read_litedb(self):
-        """Use Playnite's own LiteDB dependency so this works with its real games.db format."""
+        """Use Playnite's own LiteDB dependency to read the real games.db."""
         db = self.database_file
         dll = self._litedb_dll()
         if not db or not db.is_file():
             return []
         if not dll or not dll.is_file():
-            raise RuntimeError("LiteDB.dll was not found beside the configured Playnite installation")
+            raise RuntimeError(
+                "LiteDB.dll was not found in the configured Playnite installation. "
+                "Set playnite.liteDbPath to the actual LiteDB.dll if Playnite uses a custom/plugin layout."
+            )
 
-        # Playnite uses LiteDB, not SQLite/JSON files for the game records.
-        # Open in Shared + ReadOnly mode so Playnite can remain running.
-        script = r'''
-$ErrorActionPreference = 'Stop'
-Add-Type -Path $env:GDM_LITEDB_DLL
-$db = New-Object LiteDB.LiteDatabase("Filename=$env:GDM_PLAYNITE_DB; Mode=Shared")
-try {
+        db_ps = self._ps_quote(db)
+        dll_ps = self._ps_quote(dll)
+        script = f'''$ErrorActionPreference = 'Stop'
+Add-Type -Path '{dll_ps}'
+$db = New-Object LiteDB.LiteDatabase("Filename={db_ps}; Mode=Shared")
+try {{
     $collection = $db.GetCollection("games")
     $items = @()
-    foreach ($doc in $collection.FindAll()) {
-        $obj = [ordered]@{}
-        foreach ($key in $doc.Keys) {
+    foreach ($doc in $collection.FindAll()) {{
+        $obj = [ordered]@{{}}
+        foreach ($key in $doc.Keys) {{
             $v = $doc[$key]
-            if ($null -eq $v) { $obj[$key] = $null; continue }
-            try {
-                if ($v.IsDocument) { $obj[$key] = $v.AsDocument.RawValue }
-                elseif ($v.IsArray) { $obj[$key] = $v.AsArray.RawValue }
-                elseif ($v.IsGuid) { $obj[$key] = $v.AsGuid.ToString() }
-                elseif ($v.IsString) { $obj[$key] = $v.AsString }
-                elseif ($v.IsBoolean) { $obj[$key] = $v.AsBoolean }
-                elseif ($v.IsInt32) { $obj[$key] = $v.AsInt32 }
-                elseif ($v.IsInt64) { $obj[$key] = $v.AsInt64 }
-                elseif ($v.IsDouble) { $obj[$key] = $v.AsDouble }
-                elseif ($v.IsDateTime) { $obj[$key] = $v.AsDateTime.ToString('o') }
-                else { $obj[$key] = $v.RawValue }
-            } catch { $obj[$key] = $v.ToString() }
-        }
+            if ($null -eq $v) {{ $obj[$key] = $null; continue }}
+            try {{
+                if ($v.IsDocument) {{ $obj[$key] = $v.AsDocument.RawValue }}
+                elseif ($v.IsArray) {{ $obj[$key] = $v.AsArray.RawValue }}
+                elseif ($v.IsGuid) {{ $obj[$key] = $v.AsGuid.ToString() }}
+                elseif ($v.IsString) {{ $obj[$key] = $v.AsString }}
+                elseif ($v.IsBoolean) {{ $obj[$key] = $v.AsBoolean }}
+                elseif ($v.IsInt32) {{ $obj[$key] = $v.AsInt32 }}
+                elseif ($v.IsInt64) {{ $obj[$key] = $v.AsInt64 }}
+                elseif ($v.IsDouble) {{ $obj[$key] = $v.AsDouble }}
+                elseif ($v.IsDateTime) {{ $obj[$key] = $v.AsDateTime.ToString('o') }}
+                else {{ $obj[$key] = $v.RawValue }}
+            }} catch {{ $obj[$key] = $v.ToString() }}
+        }}
         $items += [pscustomobject]$obj
-    }
+    }}
     $items | ConvertTo-Json -Depth 20 -Compress
-} finally { $db.Dispose() }
-'''
-        env = os.environ.copy()
-        env["GDM_LITEDB_DLL"] = str(dll)
-        env["GDM_PLAYNITE_DB"] = str(db)
+}} finally {{ $db.Dispose() }}'''
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
             capture_output=True,
