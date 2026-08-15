@@ -34,7 +34,6 @@ def volume_serial(drive):
 
 
 def powershell_drive_value(drive, expression):
-    """Evaluate an expression against both the partition ($p) and disk ($d)."""
     letter = drive[0]
     command = (
         f"$p=Get-Partition -DriveLetter '{letter}' -ErrorAction SilentlyContinue; "
@@ -73,7 +72,6 @@ def partition_number(drive):
 
 
 def drive_id(drive):
-    """Return a stable identity for the mounted partition."""
     partition_uid = partition_unique_id(drive)
     if partition_uid:
         return f"PARTITION:{partition_uid}"
@@ -114,72 +112,93 @@ class Scanner:
         self.config = config
 
     def scan_drive(self, drive):
+        """Discover a drive completely without changing persistent state."""
         root = Path(drive)
         config_file = root / self.config["config_file"]
         if not config_file.is_file():
-            return False
+            return None
         info = read_ini(config_file)
         if not info:
-            return False
+            return None
 
         uid = drive_id(drive)
         if not uid:
             log.warning("Could not identify drive partition %s", drive)
-            return False
+            return None
 
-        legacy_uid = legacy_drive_id(drive)
-        log.debug("Partition identity: letter=%s identity=%s", drive[0], uid)
-        drive_id_value = self.db.upsert_drive(
-            uid, info["name"], info["description"], drive[0], legacy_uuid=legacy_uid
-        )
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
-            log.warning("Game folder unavailable on %s; keeping existing indexed games", drive)
-            return True
+            log.warning("Game folder unavailable on %s; scan result is incomplete", drive)
+            return None
 
-        seen_paths = set()
+        games = []
         try:
             for item in games_root.iterdir():
                 if not item.is_dir() or not item.name.strip():
                     continue
-                relative_path = item.relative_to(root).as_posix()
-                seen_paths.add(relative_path)
-                self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
+                games.append({
+                    "name": item.name.strip(),
+                    "relative_path": item.relative_to(root).as_posix(),
+                })
         except OSError as exc:
-            log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
-            return True
+            log.warning("Cannot fully scan %s; preserving previous state: %s", games_root, exc)
+            return None
 
-        log.debug("Scan indexed %d game folders on %s; existing library entries preserved", len(seen_paths), drive)
-        return True
+        return {
+            "uuid": uid,
+            "legacy_uuid": legacy_drive_id(drive),
+            "name": info["name"],
+            "description": info["description"],
+            "letter": drive[0],
+            "games": games,
+        }
 
     def scan(self):
-        """Perform a discovery pass without mutating connectivity for missing/failed results.
+        """Discover first, then atomically apply only complete results.
 
-        A drive is marked connected only by a successful, complete drive scan.
-        Missing drives are resolved after the full discovery pass. If discovery
-        itself fails or returns no usable GameDrive partitions, the last known
-        connectivity state is preserved.
+        Scanning is deliberately side-effect free until every successfully
+        discovered GameDrive has a complete game-folder result. A failed,
+        timed-out, or partial scan therefore cannot create transient offline
+        states or replace the current library with partial data.
         """
-        discovered = set()
-        scanned = 0
         letters = drive_letters()
         if not letters:
-            log.warning("Drive discovery unavailable; preserving last known connectivity state")
+            log.warning("Drive discovery unavailable; preserving last known state")
             return 0
 
+        results = []
         for drive in letters:
             try:
-                if self.scan_drive(drive):
-                    uid = drive_id(drive)
-                    if uid:
-                        discovered.add(uid)
-                        scanned += 1
+                result = self.scan_drive(drive)
+                if result:
+                    results.append(result)
             except Exception:
-                log.exception("Error scanning %s; preserving its previous state", drive)
+                log.exception("Error scanning %s; preserving previous state", drive)
 
-        if scanned > 0:
-            changed = self.db.apply_scan_connectivity(discovered)
-            log.info("Scan finished: %d GameDrive partition(s) online; connectivity updates=%d", scanned, changed)
-        else:
-            log.warning("Scan produced no valid GameDrive results; preserving last known connectivity state")
-        return scanned
+        if not results:
+            log.warning("Scan produced no complete GameDrive results; preserving last known state")
+            return 0
+
+        discovered = set()
+        for result in results:
+            try:
+                self.db.apply_drive_scan(
+                    result["uuid"],
+                    result["name"],
+                    result["description"],
+                    result["letter"],
+                    result["games"],
+                    legacy_uuid=result["legacy_uuid"],
+                )
+                discovered.add(result["uuid"])
+            except Exception:
+                log.exception("Could not commit completed scan for %s", result["letter"])
+
+        # Only a completed discovery pass is authoritative for connectivity.
+        # Drives not found in this completed pass are therefore genuinely absent.
+        changed = self.db.apply_scan_connectivity(discovered)
+        log.info(
+            "Scan finished: %d complete GameDrive partition(s); connectivity updates=%d",
+            len(discovered), changed,
+        )
+        return len(discovered)
