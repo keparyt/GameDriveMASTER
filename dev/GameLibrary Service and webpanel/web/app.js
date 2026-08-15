@@ -11,22 +11,21 @@ function hideError() { errorBox.textContent = ""; errorBox.style.display = "none
 
 function createCard(game) {
     const connected = Boolean(game.connected);
-    const hero = game.hero;
+    // Capsule/cover is the primary artwork. Hero is intentionally not rendered
+    // here so portrait game art remains the visual focus of each compact card.
     const cover = game.cover || game.capsule;
     const logo = game.logo;
     const title = game.title || game.name || "Unknown Game";
     const drive = game.drive_name || "Unknown drive";
     const letter = connected && game.last_letter ? `${game.last_letter}:` : "Offline";
-    return `<article class="card ${connected ? "" : "offline-card"}"
-        style="${connected ? "" : "opacity:.52;filter:saturate(.45)"}">
+
+    return `<article class="card ${connected ? "" : "offline-card"}">
         <div class="art">
-            ${hero ? `<img class="hero" src="${escapeHtml(hero)}" alt="" loading="lazy">` : ""}
-            ${cover ? `<img class="cover" src="${escapeHtml(cover)}" alt="" loading="lazy">` : ""}
-            ${!hero && !cover ? `<div class="fallback">NO ARTWORK</div>` : ""}
+            ${cover ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy">` : `<div class="fallback">NO ARTWORK</div>`}
         </div>
         <div class="info">
-            ${logo ? `<img class="logo" src="${escapeHtml(logo)}" alt="${escapeHtml(title)}" loading="lazy">` : ""}
-            <div class="title">${escapeHtml(title)}</div>
+            ${logo ? `<img class="logo" src="${escapeHtml(logo)}" alt="" loading="lazy">` : ""}
+            <div class="title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
             <div class="drive">${escapeHtml(drive)} · ${escapeHtml(letter)}</div>
             <div class="badge ${connected ? "" : "offline"}">${connected ? "CONNECTED" : "NOT CONNECTED"}</div>
         </div>
