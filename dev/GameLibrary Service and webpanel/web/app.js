@@ -4,116 +4,70 @@ const online = document.querySelector("#online");
 const errorBox = document.querySelector("#error");
 const drivesBox = document.querySelector("#drives");
 const driveCount = document.querySelector("#drive-count");
+const modal = document.querySelector("#game-modal");
+const detailHero = document.querySelector("#detail-hero");
+const detailLogo = document.querySelector("#detail-logo");
+const detailTitle = document.querySelector("#detail-title");
+const detailMeta = document.querySelector("#detail-meta");
+const detailDescription = document.querySelector("#detail-description");
+const detailTrailer = document.querySelector("#detail-trailer");
+const trailerSection = document.querySelector("#trailer-section");
+const launchButton = document.querySelector("#launch-game");
+const launchStatus = document.querySelector("#launch-status");
+let selectedGameId = null;
 
-function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[character]));
-}
+function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c])); }
 function showError(message) { errorBox.textContent = message; errorBox.style.display = "block"; }
 function hideError() { errorBox.textContent = ""; errorBox.style.display = "none"; }
-
-function formatBytes(bytes) {
-    const value = Number(bytes || 0);
-    if (!value) return "—";
-    const units = ["B", "GB", "TB", "PB"];
-    let size = value;
-    let unit = 0;
-    while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit++; }
-    return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
-}
+function formatBytes(bytes) { let n=Number(bytes||0),u=["B","GB","TB","PB"],i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n ? `${n>=10||i===0?Math.round(n):n.toFixed(1)} ${u[i]}` : "—"; }
 
 function createDriveCard(drive) {
-    const connected = Boolean(drive.connected);
-    const letter = drive.last_letter ? `${drive.last_letter}:` : "—";
-    return `<div class="drive-chip ${connected ? "connected" : "disconnected"}">
-        <span class="drive-dot"></span>
-        <div class="drive-chip-info">
-            <strong>${escapeHtml(drive.name || "Unnamed GameDrive")}</strong>
-            <small>${escapeHtml(letter)} · ${connected ? "Connected" : "Offline"}</small>
-        </div>
-    </div>`;
+    const connected=Boolean(drive.connected), letter=drive.last_letter?`${drive.last_letter}:`:"—";
+    return `<div class="drive-chip ${connected?"connected":"disconnected"}"><span class="drive-dot"></span><div class="drive-chip-info"><strong>${escapeHtml(drive.name||"Unnamed GameDrive")}</strong><small>${escapeHtml(letter)} · ${connected?"Connected":"Offline"}</small></div></div>`;
 }
-
 function createHardwareCard(disk) {
-    const onlineDisk = !disk.offline && String(disk.status).toLowerCase().includes("online");
-    return `<div class="hardware-chip ${onlineDisk ? "connected" : "disconnected"}">
-        <span class="hardware-icon">▣</span>
-        <div class="drive-chip-info">
-            <strong>${escapeHtml(disk.name || "Unknown disk")}</strong>
-            <small>${escapeHtml(disk.bus || "Unknown")} · ${escapeHtml(formatBytes(disk.size))} · ${escapeHtml(disk.health || "Unknown")}</small>
-        </div>
-    </div>`;
+    const connected=!disk.offline && String(disk.status).toLowerCase().includes("online");
+    return `<div class="hardware-chip ${connected?"connected":"disconnected"}"><span class="hardware-icon">▣</span><div class="drive-chip-info"><strong>${escapeHtml(disk.name||"Unknown disk")}</strong><small>${escapeHtml(disk.bus||"Unknown")} · ${escapeHtml(formatBytes(disk.size))} · ${escapeHtml(disk.health||"Unknown")}</small></div></div>`;
 }
-
 async function loadDrives() {
-    const [driveResponse, hardwareResponse] = await Promise.all([
-        fetch("/api/drives"),
-        fetch("/api/system/disks")
-    ]);
-    if (!driveResponse.ok || !hardwareResponse.ok) throw new Error("Unable to load drive information");
-
-    const drives = await driveResponse.json();
-    const hardware = await hardwareResponse.json();
-    const connected = drives.filter(drive => Boolean(drive.connected)).length;
-
-    driveCount.textContent = `${connected} connected / ${drives.length} collections`;
-
-    const collections = drives.map(createDriveCard).join("");
-    const hardwareCards = hardware.map(createHardwareCard).join("");
-    drivesBox.innerHTML = `
-        <div class="drive-group">
-            <div class="drive-group-title">GameDrive collections</div>
-            <div class="drive-list">${collections || `<span class="muted">No GameDrive collections indexed yet.</span>`}</div>
-        </div>
-        <div class="drive-group">
-            <div class="drive-group-title">Physical hardware</div>
-            <div class="drive-list">${hardwareCards || `<span class="muted">No physical disks detected.</span>`}</div>
-        </div>`;
+    const [a,b]=await Promise.all([fetch("/api/drives"),fetch("/api/system/disks")]);
+    if(!a.ok||!b.ok) throw new Error("Unable to load drive information");
+    const drives=await a.json(),hardware=await b.json(),connected=drives.filter(d=>Boolean(d.connected)).length;
+    driveCount.textContent=`${connected} connected / ${drives.length} collections`;
+    drivesBox.innerHTML=`<div class="drive-group"><div class="drive-group-title">GameDrive collections</div><div class="drive-list">${drives.map(createDriveCard).join("")||'<span class="muted">No GameDrive collections indexed yet.</span>'}</div></div><div class="drive-group"><div class="drive-group-title">Physical hardware</div><div class="drive-list">${hardware.map(createHardwareCard).join("")||'<span class="muted">No physical disks detected.</span>'}</div></div>`;
 }
-
 function createCard(game) {
-    const connected = Boolean(game.connected);
-    const cover = game.cover || game.capsule;
-    const logo = game.logo;
-    const title = game.title || game.name || "Unknown Game";
-    const drive = game.drive_name || "Unknown drive";
-    const letter = connected && game.last_letter ? `${game.last_letter}:` : "Offline";
-
-    return `<article class="card ${connected ? "" : "offline-card"}">
-        <div class="art">
-            ${cover ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy">` : `<div class="fallback">NO ARTWORK</div>`}
-        </div>
-        <div class="info">
-            ${logo ? `<img class="logo" src="${escapeHtml(logo)}" alt="" loading="lazy">` : ""}
-            <div class="title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
-            <div class="drive">${escapeHtml(drive)} · ${escapeHtml(letter)}</div>
-            <div class="badge ${connected ? "" : "offline"}">${connected ? "CONNECTED" : "OFFLINE"}</div>
-        </div>
-    </article>`;
+    const connected=Boolean(game.connected),cover=game.cover||game.capsule,logo=game.logo,title=game.title||game.name||"Unknown Game",drive=game.drive_name||"Unknown drive",letter=connected&&game.last_letter?`${game.last_letter}:`:"Offline";
+    return `<article class="card ${connected?"":"offline-card"}" data-game-id="${game.id}" tabindex="0" role="button" aria-label="Open ${escapeHtml(title)}"><div class="art">${cover?`<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy">`:'<div class="fallback">NO ARTWORK</div>'}</div><div class="info">${logo?`<img class="logo" src="${escapeHtml(logo)}" alt="" loading="lazy">`:""}<div class="title" title="${escapeHtml(title)}">${escapeHtml(title)}</div><div class="drive">${escapeHtml(drive)} · ${escapeHtml(letter)}</div><div class="badge ${connected?"":"offline"}">${connected?"CONNECTED":"OFFLINE"}</div></div></article>`;
 }
-
 async function loadGames() {
-    const params = new URLSearchParams({ q: search.value.trim(), connected_only: online.checked });
-    const response = await fetch(`/api/games?${params.toString()}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (!data.length) { grid.innerHTML = `<div class="empty">No games found.</div>`; return; }
-    grid.innerHTML = data.map(createCard).join("");
+    const params=new URLSearchParams({q:search.value.trim(),connected_only:online.checked}),response=await fetch(`/api/games?${params}`);
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data=await response.json(); grid.innerHTML=data.length?data.map(createCard).join(""):`<div class="empty">No games found.</div>`;
 }
-
-async function load() {
-    hideError();
+async function openGame(id) {
+    selectedGameId=id; modal.classList.add("open"); modal.setAttribute("aria-hidden","false"); document.body.classList.add("modal-open");
+    detailTitle.textContent="Loading…"; detailLogo.style.display="none"; detailHero.style.backgroundImage="none"; detailDescription.textContent="Loading Steam details…"; detailMeta.textContent=""; trailerSection.style.display="none"; detailTrailer.pause(); detailTrailer.removeAttribute("src"); launchButton.disabled=true; launchStatus.textContent="";
     try {
-        // Load collections first, then games. A slow artwork lookup must not
-        // replace the drive list or make another disk's library disappear.
-        await loadDrives();
-        await loadGames();
-    } catch (error) {
-        console.error(error);
-        showError("Unable to load the complete Game Library.");
-    }
+        const response=await fetch(`/api/games/${id}/details`); if(!response.ok) throw new Error("Unable to load game details");
+        const game=await response.json();
+        detailTitle.textContent=game.title||game.name||"Unknown Game";
+        if(game.logo){detailLogo.src=game.logo;detailLogo.style.display="block";}
+        const hero=game.hero||game.capsule||game.cover; if(hero) detailHero.style.backgroundImage=`url("${String(hero).replace(/"/g,'\\"')}")`;
+        detailMeta.textContent=[game.release_date,game.drive_name,game.last_letter?`${game.last_letter}:`:null].filter(Boolean).join(" · ");
+        detailDescription.innerHTML=game.description||"No description available.";
+        if(game.trailer){detailTrailer.src=game.trailer;trailerSection.style.display="block";}
+        launchButton.disabled=!game.connected;
+        launchStatus.textContent=game.connected?"":"Drive offline";
+    } catch(error){ console.error(error); detailTitle.textContent="Unable to load game"; detailDescription.textContent=error.message; launchButton.disabled=true; }
 }
+function closeGame(){ modal.classList.remove("open"); modal.setAttribute("aria-hidden","true"); document.body.classList.remove("modal-open"); detailTrailer.pause(); detailTrailer.removeAttribute("src"); selectedGameId=null; }
 
-let timer = null;
-search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(loadGames, 150); });
-online.addEventListener("change", loadGames);
-load();
+grid.addEventListener("click",e=>{const card=e.target.closest(".card");if(card)openGame(Number(card.dataset.gameId));});
+grid.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.closest(".card")){e.preventDefault();openGame(Number(e.target.closest(".card").dataset.gameId));}});
+document.querySelectorAll("[data-close-game]").forEach(el=>el.addEventListener("click",closeGame));
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal.classList.contains("open"))closeGame();});
+launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;launchButton.disabled=true;launchStatus.textContent="Starting…";try{const r=await fetch(`/api/games/${selectedGameId}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);launchStatus.textContent="Game started";}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`;}finally{setTimeout(()=>{launchButton.disabled=false;},500);}});
+
+async function load(){hideError();try{await loadDrives();await loadGames();}catch(e){console.error(e);showError("Unable to load the complete Game Library.");}}
+let timer=null;search.addEventListener("input",()=>{clearTimeout(timer);timer=setTimeout(loadGames,150);});online.addEventListener("change",loadGames);load();
