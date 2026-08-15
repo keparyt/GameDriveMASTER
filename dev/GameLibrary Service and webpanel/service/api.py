@@ -11,26 +11,18 @@ ARTWORK_DIR = BASE_DIR / "data" / "images"
 
 
 def create_app(db, metadata=None):
-
-    app = FastAPI(
-        title="Game Library API",
-        version="1.0.0"
-    )
+    app = FastAPI(title="Game Library API", version="1.0.0")
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1",
-            "http://localhost"
-        ],
+        allow_origins=["http://127.0.0.1", "http://localhost"],
         allow_methods=["GET"],
         allow_headers=["*"]
     )
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        path = WEB_DIR / "index.html"
-        return path.read_text(encoding="utf-8")
+        return (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/style.css")
     def css():
@@ -42,7 +34,6 @@ def create_app(db, metadata=None):
 
     @app.get("/artwork/{game_name}/{filename}")
     def artwork(game_name: str, filename: str):
-        # Only serve files from the artwork cache; never expose arbitrary paths.
         path = (ARTWORK_DIR / game_name / filename).resolve()
         root = ARTWORK_DIR.resolve()
         if root not in path.parents or not path.is_file():
@@ -51,20 +42,21 @@ def create_app(db, metadata=None):
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "service": "GameLibrary"}
+        return {
+            "ok": True,
+            "service": "GameLibrary",
+            "metadata_enabled": bool(metadata and metadata.enabled),
+            "artwork_queue": metadata._queue.qsize() if metadata else 0
+        }
 
     @app.get("/api/games")
-    def games(
-        q: str = Query("", max_length=200),
-        connected_only: bool = False
-    ):
+    def games(q: str = Query("", max_length=200), connected_only: bool = False):
         rows = db.search(q, connected_only)
-        if metadata and metadata.config.get("auto_lookup", True):
+        if metadata and metadata.auto_lookup:
             for row in rows:
                 if not row["capsule"]:
-                    metadata.lookup(row["id"], row["name"])
-            rows = db.search(q, connected_only)
-        return [dict(row) for row in rows]
+                    metadata.queue_lookup(row["id"], row["name"])
+        return [dict(row) for row in db.search(q, connected_only)]
 
     @app.get("/api/games/{game_id}")
     def game(game_id: int):
@@ -72,8 +64,7 @@ def create_app(db, metadata=None):
         if not row:
             return {"error": "not_found"}
         if metadata and not row["capsule"]:
-            metadata.lookup(game_id, row["name"])
-            row = db.get_game(game_id)
-        return dict(row)
+            metadata.queue_lookup(game_id, row["name"])
+        return dict(db.get_game(game_id))
 
     return app
