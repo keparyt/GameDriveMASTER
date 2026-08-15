@@ -60,12 +60,36 @@ class Database:
             self.conn.commit()
 
     def mark_disconnected(self):
+        """Deprecated compatibility method. Scans must not use it."""
+        return 0
+
+    def apply_scan_connectivity(self, discovered_uuids):
+        """Atomically apply the connectivity result of a completed scan.
+
+        An empty discovery result is deliberately rejected by the scanner before
+        this method is called. This prevents a failed/partial discovery pass from
+        turning every known drive offline.
+        """
+        discovered = set(discovered_uuids or ())
+        if not discovered:
+            return 0
+        timestamp = now()
         with self.lock:
-            self.conn.execute("UPDATE drives SET connected=0")
+            rows = self.conn.execute("SELECT id,uuid,connected FROM drives").fetchall()
+            changed = 0
+            for row in rows:
+                new_state = 1 if row["uuid"] in discovered else 0
+                if int(bool(row["connected"])) != new_state:
+                    changed += 1
+                self.conn.execute(
+                    "UPDATE drives SET connected=?, last_seen=CASE WHEN ?=1 THEN ? ELSE last_seen END WHERE id=?",
+                    (new_state, new_state, timestamp, row["id"]),
+                )
             self.conn.commit()
+            return changed
 
     def upsert_drive(self, uuid, name, description, letter, legacy_uuid=None):
-        """Create/update one GameDrive partition."""
+        """Create/update one GameDrive partition as a successful scan result."""
         timestamp = now()
         with self.lock:
             row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
@@ -136,7 +160,6 @@ class Database:
             """, (game_id,)).fetchone()
 
     def set_metadata(self, data_game_id, data):
-        """Replace metadata for a game, used for the final completed result."""
         with self.lock:
             game = self.conn.execute("SELECT id FROM games WHERE id=?", (data_game_id,)).fetchone()
             if not game:
@@ -152,7 +175,6 @@ class Database:
             return True
 
     def update_metadata_fields(self, data_game_id, data):
-        """Merge newly downloaded artwork into existing metadata immediately."""
         with self.lock:
             game = self.conn.execute("SELECT id FROM games WHERE id=?", (data_game_id,)).fetchone()
             if not game:
