@@ -40,8 +40,6 @@ class PlayniteBridge:
             Path(os.environ.get("LOCALAPPDATA", "")) / "Playnite" / "Playnite.DesktopApp.exe",
             Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Playnite" / "Playnite.DesktopApp.exe",
         ]
-        # A custom/portable Playnite path is common; search the configured library's
-        # parent only when an explicit Playnite path wasn't supplied.
         for p in candidates:
             if p.is_file():
                 return p
@@ -65,7 +63,6 @@ class PlayniteBridge:
             roots.extend([self.playnite_path.parent, self.playnite_path.parent / "lib", self.playnite_path.parent / "Libraries"])
         if self.library_path:
             roots.extend([self.library_path, self.library_path.parent])
-        # Also inspect the repository's existing Playnite module/DLL area.
         roots.append(Path(__file__).resolve().parent)
         seen = set()
         for root in roots:
@@ -116,23 +113,17 @@ class PlayniteBridge:
             raise RuntimeError("LiteDB.dll was not found. Set playnite.liteDbPath to the LiteDB.dll used by Playnite.")
         if not self.database_path or not self.database_path.is_file():
             raise RuntimeError("Playnite games.db was not found.")
-        # Do not use an environment variable: the previous implementation could
-        # lose it when PowerShell was spawned by the tray process. Pass literal,
-        # safely encoded arguments instead.
-        script = r'''
-param([string]$DllPath,[string]$DbPath)
-$ErrorActionPreference = 'Stop'
-Add-Type -Path $DllPath
-$db = New-Object LiteDB.LiteDatabase($DbPath)
-try {
-  $col = $db.GetCollection('games')
-  $items = @()
-  foreach ($doc in $col.FindAll()) { $items += $doc.RawValue.ToString() }
-  $items | ConvertTo-Json -Depth 30 -Compress
-} finally { $db.Dispose() }
-'''
+
+        # PowerShell does not accept positional arguments after -EncodedCommand.
+        # Embed the two already-resolved filesystem paths into the encoded script
+        # instead. This also avoids relying on environment variables inherited by
+        # the tray launcher.
+        def ps_quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        script = f'''\n$ErrorActionPreference = 'Stop'\n$DllPath = {ps_quote(self.litedb_path)}\n$DbPath = {ps_quote(self.database_path)}\nAdd-Type -Path $DllPath\n$db = New-Object LiteDB.LiteDatabase($DbPath)\ntry {{\n  $col = $db.GetCollection('games')\n  $items = @()\n  foreach ($doc in $col.FindAll()) {{ $items += $doc.RawValue.ToString() }}\n  $items | ConvertTo-Json -Depth 30 -Compress\n}} finally {{ $db.Dispose() }}\n'''
         encoded = __import__("base64").b64encode(script.encode("utf-16le")).decode("ascii")
-        args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded, str(self.litedb_path), str(self.database_path)]
+        args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
         r = subprocess.run(args, capture_output=True, text=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if r.returncode:
             raise RuntimeError((r.stderr or r.stdout or "LiteDB read failed").strip())
