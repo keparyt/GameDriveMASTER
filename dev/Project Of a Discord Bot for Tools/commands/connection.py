@@ -58,11 +58,17 @@ class Connection(commands.Cog):
         name="connection-panel",
         description="Send the Home LAN connection panel.",
     )
-    @app_commands.default_permissions(administrator=True)
     async def connection_panel(
         self,
         interaction: discord.Interaction,
     ):
+        if interaction.user.id != self.bot.master_id:
+            await interaction.response.send_message(
+                "❌ You are not authorized to use this command.",
+                ephemeral=True,
+            )
+            return
+
         embed = discord.Embed(
             title="🏠 Home LAN Access",
             description=(
