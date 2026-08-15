@@ -4,6 +4,13 @@ from discord.ext import commands
 
 
 class ConnectionView(discord.ui.View):
+    """Persistent connection panel view.
+
+    timeout=None + explicit custom_id values allow Discord to send
+    button interactions back to the bot after a restart. The view is
+    re-registered during extension setup below.
+    """
+
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
@@ -99,4 +106,7 @@ async def setup(bot: commands.Bot):
     )
 
     await bot.add_cog(cog)
+
+    # Register the same persistent custom_id handler after every bot restart.
+    # Existing Discord messages therefore keep working without being resent.
     bot.add_view(ConnectionView(cog))
