@@ -9,6 +9,7 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
+from service import scanner as scanner_module
 from service.database import Database
 from service.scanner import Scanner
 
@@ -48,7 +49,8 @@ class AvailabilityTests(unittest.TestCase):
                 raise AssertionError("present drive must not be marked offline")
 
         scanner = Scanner(FakeDb(), {})
-        with patch("service.scanner.drive_letters", return_value=["E:\\"]), \
+        with patch.object(scanner_module.ctypes, "windll", object()), \
+             patch("service.scanner.drive_letters", return_value=["E:\\"]), \
              patch.object(scanner, "scan_drive", return_value=None):
             scanner.scan()
 
@@ -64,7 +66,8 @@ class AvailabilityTests(unittest.TestCase):
                 return True
 
         scanner = Scanner(FakeDb(), {})
-        with patch("service.scanner.drive_letters", return_value=[]):
+        with patch.object(scanner_module.ctypes, "windll", object()), \
+             patch("service.scanner.drive_letters", return_value=[]):
             scanner.scan()
         self.assertEqual(calls, [1])
 
@@ -77,7 +80,8 @@ class AvailabilityTests(unittest.TestCase):
                 raise AssertionError("rediscovered drive must remain online")
 
         scanner = Scanner(FakeDb(), {})
-        with patch("service.scanner.drive_letters", return_value=["F:\\"]), \
+        with patch.object(scanner_module.ctypes, "windll", object()), \
+             patch("service.scanner.drive_letters", return_value=["F:\\"]), \
              patch.object(scanner, "scan_drive", return_value={"uuid": "drive-1"}):
             scanner.scan()
 
