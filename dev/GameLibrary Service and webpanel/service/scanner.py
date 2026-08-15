@@ -221,12 +221,16 @@ class Scanner:
         # was found under a different letter, it remains online.
         for row in known:
             letter = row["last_letter"]
-            if not letter or str(letter).upper() in drive_set:
+            if not letter:
+                continue
+            normalized_letter = str(letter).strip().rstrip(":\\").upper()
+            normalized_root = f"{normalized_letter}:\\"
+            if normalized_root in drive_set:
                 continue
             if row["uuid"] in rediscovered_ids:
                 continue
             if self.db.mark_drive_offline(row["id"]):
-                log.info("Confirmed GameDrive offline: %s (%s:)", row["name"], letter)
+                log.info("Confirmed GameDrive offline: %s (%s:)", row["name"], normalized_letter)
 
         log.info("Scan finished: %d GameDrive partition(s) online", found)
         return found
