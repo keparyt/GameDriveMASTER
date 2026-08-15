@@ -1,27 +1,93 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#050505"><title>KeparGAMELAB</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/theme.css?v=gold-luxury-2">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#070706">
+<title>GameDrive</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/theme.css?v=gold-luxury-3">
 </head>
 <body>
-<div class="aurora aurora-a"></div><div class="aurora aurora-b"></div><div class="grain"></div>
-<header><div class="brand"><span class="brand-mark">K</span><div><b>Kepar</b><span>GAMELAB</span></div></div><div class="header-right"><div class="library-pulse"><i></i> KEPARGAMELAB</div><div class="header-time" id="header-time"></div></div></header>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">G</span>
+    <div class="brand-name"><b>GameDrive</b><span>LIBRARY</span></div>
+  </div>
+  <div class="header-right">
+    <div class="library-pulse"><i></i> ONLINE</div>
+    <div class="header-time" id="header-time"></div>
+  </div>
+</header>
+
 <main>
-<section class="hero">
- <div class="eyebrow"><span></span> KEPARGAMELAB</div>
- <h1>Game Library</h1>
- <div class="hero-search"><span>⌕</span><input id="search" autofocus autocomplete="off" placeholder="Search your games..." aria-label="Search games"><kbd>CTRL K</kbd></div>
- <label class="filter"><input id="online" type="checkbox"><span class="switch"></span> Connected drives only</label>
- <div id="error"></div>
-</section>
-<section class="drive-panel">
- <div class="section-top"><div><div class="section-kicker">KEPARGAMEDRIVES</div></div><div class="drive-count" id="drive-count">0 connected</div></div>
- <div id="drives" class="drives"></div>
-</section>
-<section class="library-section"><div class="section-top library-top"><div><div class="section-kicker">LIBRARY</div><h2>Your Games</h2></div><div class="library-line"></div></div><section id="grid" class="grid"></section></section>
+  <section class="workspace-head">
+    <div class="page-title">
+      <span class="eyebrow"><i></i> GAME LIBRARY</span>
+      <h1>Your collection</h1>
+    </div>
+    <div class="hero-search">
+      <span aria-hidden="true">⌕</span>
+      <input id="search" autofocus autocomplete="off" placeholder="Search games..." aria-label="Search games">
+      <kbd>CTRL K</kbd>
+    </div>
+  </section>
+
+  <section class="drive-panel" aria-label="Drive status">
+    <div class="drive-summary">
+      <div class="drive-label"><span class="drive-status-dot"></span><span>GameDrive</span></div>
+      <div id="drives" class="drives"></div>
+      <div class="drive-count" id="drive-count">0 connected</div>
+    </div>
+    <label class="filter" title="Only show games on connected drives">
+      <input id="online" type="checkbox">
+      <span class="switch"></span>
+      Connected only
+    </label>
+  </section>
+
+  <div id="error"></div>
+
+  <section class="library-section">
+    <div class="library-toolbar">
+      <div>
+        <span class="section-kicker">COLLECTION</span>
+        <h2>Games</h2>
+      </div>
+      <div class="library-line"></div>
+    </div>
+    <section id="grid" class="grid" aria-live="polite"></section>
+  </section>
 </main>
-<div id="game-modal" class="modal" aria-hidden="true"><div class="modal-backdrop" data-close-game></div><article class="game-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="close-game" data-close-game aria-label="Close">×</button><div id="detail-hero" class="detail-hero"><div class="hero-vignette"></div></div><div class="detail-body"><div class="detail-heading"><img id="detail-logo" class="detail-logo" alt=""><h2 id="detail-title">Game</h2><div id="detail-meta" class="detail-meta"></div></div><div class="detail-actions"><button id="launch-game" class="launch-button"><span>▶</span> START GAME</button><span id="launch-status" class="launch-status"></span></div><section id="trailer-section" class="trailer-section"><div class="detail-kicker">TRAILER</div><video id="detail-trailer" controls playsinline preload="metadata"></video></section><section class="description-section"><div class="detail-kicker">ABOUT THE GAME</div><p id="detail-description">No description available.</p></section></div></article></div>
+
+<div id="game-modal" class="modal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-game></div>
+  <article class="game-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <button class="close-game" data-close-game aria-label="Close">×</button>
+    <div id="detail-hero" class="detail-hero"><div class="hero-vignette"></div></div>
+    <div class="detail-body">
+      <div class="detail-heading">
+        <img id="detail-logo" class="detail-logo" alt="">
+        <h2 id="detail-title">Game</h2>
+        <div id="detail-meta" class="detail-meta"></div>
+      </div>
+      <div class="detail-actions">
+        <button id="launch-game" class="launch-button"><span>▶</span> START GAME</button>
+        <span id="launch-status" class="launch-status"></span>
+      </div>
+      <section id="trailer-section" class="trailer-section">
+        <div class="detail-kicker">TRAILER</div>
+        <video id="detail-trailer" controls playsinline preload="metadata"></video>
+      </section>
+      <section class="description-section">
+        <div class="detail-kicker">ABOUT THE GAME</div>
+        <p id="detail-description">No description available.</p>
+      </section>
+    </div>
+  </article>
+</div>
+
 <div id="drive-notification" class="drive-notification"></div>
 <script src="/app.js"></script>
-</body></html>
+</body>
+</html>
