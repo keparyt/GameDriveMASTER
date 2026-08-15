@@ -47,7 +47,20 @@ def main():
         database = Database()
         scanner = Scanner(database, config)
         playnite = PlayniteBridge(config.get("playnite", {}))
-        log.info("Playnite bridge: enabled=%s available=%s library=%s", playnite.enabled, playnite.available, playnite.library_path)
+        if playnite.enabled:
+            try:
+                # Playnite must be running before the bridge is considered
+                # available because the GameDrive Playnite DLL owns the API.
+                playnite.start(wait_for_api=True, timeout=8)
+            except Exception:
+                log.exception("Playnite startup failed; continuing with Playnite integration disabled until it becomes available")
+        log.info(
+            "Playnite bridge: enabled=%s available=%s executable=%s library=%s",
+            playnite.enabled,
+            playnite.available,
+            playnite.playnite_path,
+            playnite.library_path,
+        )
         if playnite.enabled:
             try: playnite.refresh(force=True)
             except Exception: log.exception("Initial Playnite refresh failed; continuing without Playnite")
