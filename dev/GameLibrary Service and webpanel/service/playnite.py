@@ -62,6 +62,9 @@ class PlayniteBridge:
             Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
             / "Playnite"
             / "Playnite.DesktopApp.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)"))
+            / "Playnite"
+            / "Playnite.DesktopApp.exe",
         ]
         for p in candidates:
             if p.is_file():
@@ -172,8 +175,8 @@ class PlayniteBridge:
     def _parse(self, game):
         if not isinstance(game, dict):
             return None
-        # The plugin already filters to IsInstalled games. Keep this second
-        # guard so an accidental future endpoint change cannot leak uninstalled games.
+        # The plugin filters to IsInstalled games. Keep this second guard so
+        # an endpoint regression can never leak uninstalled games to the UI.
         if not bool(game.get("isInstalled", False)):
             return None
         gid = str(game.get("id") or "")
@@ -209,7 +212,10 @@ class PlayniteBridge:
                 log.info("Playnite API library read: %d installed game(s)", len(games))
                 return list(games)
             except Exception as e:
-                if not self._startup_attempted and self._ensure_started():
+                # Playnite can take a while to finish loading extensions. Do
+                # not permanently disable integration after the first failed
+                # request; every later scanner cycle can recover automatically.
+                if self._ensure_started():
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
                         try:
@@ -218,6 +224,7 @@ class PlayniteBridge:
                             self._games = games
                             self._last_refresh = time.time()
                             self._last_error = None
+                            log.info("Playnite API library read: %d installed game(s)", len(games))
                             return list(games)
                         except Exception:
                             time.sleep(0.25)
