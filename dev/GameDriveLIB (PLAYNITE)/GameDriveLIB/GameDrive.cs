@@ -7,15 +7,21 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Threading;
 
 public class GameDriveLibrary : LibraryPlugin
 {
     private readonly IPlayniteAPI api;
     private static readonly ILogger logger = LogManager.GetLogger();
+    private readonly HttpListener libraryServer = new HttpListener();
+    private Thread libraryServerThread;
+    private const string LibraryApiPrefix = "http://127.0.0.1:38123/";
 
     public override Guid Id { get; } =
         Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
@@ -25,6 +31,7 @@ public class GameDriveLibrary : LibraryPlugin
     public GameDriveLibrary(IPlayniteAPI api) : base(api)
     {
         this.api = api;
+        StartLibraryApi();
     }
 
     public override IEnumerable<GameMetadata> GetGames(LibraryGetGamesArgs args)
@@ -66,19 +73,13 @@ public class GameDriveLibrary : LibraryPlugin
 
             string apiKey = null;
             if (ini.Sections.ContainsSection("SteamGridDB"))
-            {
                 apiKey = ini["SteamGridDB"]["api_key"];
-            }
 
             SteamGridDbClient sgdb = null;
             if (!string.IsNullOrWhiteSpace(apiKey))
-            {
                 sgdb = new SteamGridDbClient(apiKey.Trim(), logger);
-            }
             else
-            {
                 logger.Info("GameDrive: SteamGridDB API key is not configured; artwork download is disabled.");
-            }
 
             foreach (var key in ini["Directories"])
             {
@@ -90,18 +91,12 @@ public class GameDriveLibrary : LibraryPlugin
                     continue;
                 }
 
-                logger.Info($"GameDrive: scanning folder '{folder}'");
-
                 foreach (string gameFolder in Directory.GetDirectories(folder))
                 {
                     string name = Path.GetFileName(gameFolder);
-
                     string exeTxt = Path.Combine(gameFolder, "exepath.txt");
                     if (!File.Exists(exeTxt))
-                    {
-                        logger.Warn($"GameDrive: '{name}' has no exepath.txt, skipping.");
                         continue;
-                    }
 
                     string relativeExe;
                     try
@@ -115,14 +110,8 @@ public class GameDriveLibrary : LibraryPlugin
                     }
 
                     string exe = Path.Combine(gameFolder, "Game", relativeExe);
-
                     if (!File.Exists(exe))
-                    {
-                        logger.Warn($"GameDrive: '{name}' exe not found at '{exe}' (exepath.txt said '{relativeExe}').");
                         continue;
-                    }
-
-                    logger.Info($"GameDrive: found game '{name}' -> {exe}");
 
                     var metadata = new GameMetadata
                     {
@@ -133,9 +122,9 @@ public class GameDriveLibrary : LibraryPlugin
                         Categories = new HashSet<MetadataProperty>()
                     };
 
-                    metadata.GameActions = new List<GameAction>()
+                    metadata.GameActions = new List<GameAction>
                     {
-                        new GameAction()
+                        new GameAction
                         {
                             Name = "Play",
                             Type = GameActionType.File,
@@ -145,13 +134,9 @@ public class GameDriveLibrary : LibraryPlugin
                     };
 
                     if (sgdb != null)
-                    {
                         EnsureMediaAssets(gameFolder, name, metadata, sgdb, logger);
-                    }
                     else
-                    {
                         ApplyExistingMedia(gameFolder, metadata);
-                    }
 
                     games.Add(metadata);
                 }
@@ -162,42 +147,143 @@ public class GameDriveLibrary : LibraryPlugin
         return games;
     }
 
+    private void StartLibraryApi()
+    {
+        try
+        {
+            libraryServer.Prefixes.Add(LibraryApiPrefix);
+            libraryServer.Start();
+            libraryServerThread = new Thread(LibraryApiLoop) { IsBackground = true, Name = "GameDrive Playnite API" };
+            libraryServerThread.Start();
+            logger.Info($"GameDrive: Playnite library API listening on {LibraryApiPrefix}");
+        }
+        catch (Exception ex)
+        {
+            logger.Error(ex, "GameDrive: failed to start Playnite library API.");
+        }
+    }
+
+    private void LibraryApiLoop()
+    {
+        while (libraryServer.IsListening)
+        {
+            try
+            {
+                var context = libraryServer.GetContext();
+                ThreadPool.QueueUserWorkItem(_ => HandleLibraryRequest(context));
+            }
+            catch (HttpListenerException)
+            {
+                break;
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.Warn($"GameDrive: Playnite API listener error: {ex.Message}");
+            }
+        }
+    }
+
+    private void HandleLibraryRequest(HttpListenerContext context)
+    {
+        try
+        {
+            string path = context.Request.Url.AbsolutePath.TrimEnd('/').ToLowerInvariant();
+
+            if (path == "/health")
+            {
+                WriteJson(context, new { ok = true, source = "PlayniteApi.Database.Games" });
+                return;
+            }
+
+            if (path == "/games" && context.Request.HttpMethod == "GET")
+            {
+                // This is the authoritative Playnite library. The service must not read games.db itself.
+                var games = api.Database.Games
+                    .Where(g => g != null && g.IsInstalled)
+                    .Select(ToLibraryGame)
+                    .ToList();
+
+                WriteJson(context, games);
+                return;
+            }
+
+            WriteJson(context, new { ok = false, error = "not_found" }, 404);
+        }
+        catch (Exception ex)
+        {
+            logger.Error(ex, "GameDrive: Playnite library API request failed.");
+            try
+            {
+                WriteJson(context, new { ok = false, error = ex.Message }, 500);
+            }
+            catch { }
+        }
+    }
+
+    private object ToLibraryGame(Game game)
+    {
+        GameAction action = null;
+        if (game.GameActions != null)
+            action = game.GameActions.FirstOrDefault(a => a != null && a.IsPlayAction) ?? game.GameActions.FirstOrDefault();
+
+        return new
+        {
+            id = game.Id,
+            name = game.Name,
+            gameId = game.GameId,
+            sourceId = game.SourceId,
+            isInstalled = game.IsInstalled,
+            installDirectory = game.InstallDirectory,
+            executable = action?.Path,
+            arguments = action?.Arguments,
+            workingDirectory = action?.WorkingDir,
+            description = game.Description,
+            releaseDate = game.ReleaseDate,
+            playtime = game.Playtime
+        };
+    }
+
+    private void WriteJson(HttpListenerContext context, object value, int statusCode = 200)
+    {
+        byte[] bytes;
+        var serializer = new DataContractJsonSerializer(value.GetType());
+        using (var ms = new MemoryStream())
+        {
+            serializer.WriteObject(ms, value);
+            bytes = ms.ToArray();
+        }
+
+        context.Response.StatusCode = statusCode;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        context.Response.OutputStream.Write(bytes, 0, bytes.Length);
+        context.Response.OutputStream.Close();
+    }
+
     private void EnsureMediaAssets(string gameFolder, string gameName, GameMetadata metadata, SteamGridDbClient sgdb, ILogger logger)
     {
         string capsulePath = Path.Combine(gameFolder, "Capsule.png");
         string heroPath = Path.Combine(gameFolder, "Hero.png");
         string iconPath = Path.Combine(gameFolder, "Icon.png");
-
         bool needCapsule = !File.Exists(capsulePath);
         bool needHero = !File.Exists(heroPath);
         bool needIcon = !File.Exists(iconPath);
-
         int? gameId = null;
+
         if (needCapsule || needHero || needIcon)
         {
-            try
-            {
-                gameId = sgdb.SearchGameId(gameName);
-            }
-            catch (Exception ex)
-            {
-                logger.Warn($"GameDrive: SteamGridDB search failed for '{gameName}': {ex.Message}");
-            }
+            try { gameId = sgdb.SearchGameId(gameName); }
+            catch (Exception ex) { logger.Warn($"GameDrive: SteamGridDB search failed for '{gameName}': {ex.Message}"); }
 
-            if (gameId == null)
+            if (gameId != null)
             {
-                logger.Warn($"GameDrive: no SteamGridDB match for '{gameName}', skipping media download.");
-            }
-            else
-            {
-                if (needCapsule)
-                    TryDownload(sgdb, "grids", gameId.Value, "600x900", capsulePath, logger, "capsule");
-
-                if (needHero)
-                    TryDownload(sgdb, "heroes", gameId.Value, "1920x620", heroPath, logger, "hero/background");
-
-                if (needIcon)
-                    TryDownload(sgdb, "icons", gameId.Value, null, iconPath, logger, "icon");
+                if (needCapsule) TryDownload(sgdb, "grids", gameId.Value, "600x900", capsulePath, logger, "capsule");
+                if (needHero) TryDownload(sgdb, "heroes", gameId.Value, "1920x620", heroPath, logger, "hero/background");
+                if (needIcon) TryDownload(sgdb, "icons", gameId.Value, null, iconPath, logger, "icon");
             }
         }
 
@@ -209,15 +295,9 @@ public class GameDriveLibrary : LibraryPlugin
         string capsulePath = Path.Combine(gameFolder, "Capsule.png");
         string heroPath = Path.Combine(gameFolder, "Hero.png");
         string iconPath = Path.Combine(gameFolder, "Icon.png");
-
-        if (File.Exists(capsulePath))
-            metadata.CoverImage = new MetadataFile(capsulePath);
-
-        if (File.Exists(heroPath))
-            metadata.BackgroundImage = new MetadataFile(heroPath);
-
-        if (File.Exists(iconPath))
-            metadata.Icon = new MetadataFile(iconPath);
+        if (File.Exists(capsulePath)) metadata.CoverImage = new MetadataFile(capsulePath);
+        if (File.Exists(heroPath)) metadata.BackgroundImage = new MetadataFile(heroPath);
+        if (File.Exists(iconPath)) metadata.Icon = new MetadataFile(iconPath);
     }
 
     private void TryDownload(SteamGridDbClient sgdb, string category, int gameId, string dimensions, string destPath, ILogger logger, string label)
@@ -225,14 +305,8 @@ public class GameDriveLibrary : LibraryPlugin
         try
         {
             string url = sgdb.GetImageUrl(category, gameId, dimensions);
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                logger.Warn($"GameDrive: no {label} found on SteamGridDB for game id {gameId}.");
-                return;
-            }
-
+            if (string.IsNullOrWhiteSpace(url)) return;
             sgdb.DownloadFile(url, destPath);
-            logger.Info($"GameDrive: downloaded {label} -> {destPath}");
         }
         catch (Exception ex)
         {
@@ -241,19 +315,13 @@ public class GameDriveLibrary : LibraryPlugin
     }
 }
 
-// Minimal SteamGridDB REST client.
-// Uses the v2 API for game search and artwork retrieval.
 public class SteamGridDbClient
 {
     private static readonly HttpClient http = CreateHttpClient();
     private readonly string apiKey;
     private readonly ILogger logger;
 
-    public SteamGridDbClient(string apiKey, ILogger logger)
-    {
-        this.apiKey = apiKey;
-        this.logger = logger;
-    }
+    public SteamGridDbClient(string apiKey, ILogger logger) { this.apiKey = apiKey; this.logger = logger; }
 
     private static HttpClient CreateHttpClient()
     {
@@ -288,38 +356,23 @@ public class SteamGridDbClient
     {
         string url = "https://www.steamgriddb.com/api/v2/search/autocomplete/" + Uri.EscapeDataString(gameName);
         var result = SendAndParse<SgdbListResponse<SgdbGame>>(url);
-
-        if (result?.Data == null || result.Data.Count == 0)
-            return null;
-
-        // Prefer an exact title match so similarly named games don't receive the wrong artwork.
-        var exact = result.Data.FirstOrDefault(x =>
-            string.Equals(Normalize(x.Name), Normalize(gameName), StringComparison.OrdinalIgnoreCase));
-
+        if (result?.Data == null || result.Data.Count == 0) return null;
+        var exact = result.Data.FirstOrDefault(x => string.Equals(Normalize(x.Name), Normalize(gameName), StringComparison.OrdinalIgnoreCase));
         return (exact ?? result.Data[0]).Id;
     }
 
     private static string Normalize(string value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-            return string.Empty;
-
-        var chars = value.Where(char.IsLetterOrDigit).ToArray();
-        return new string(chars).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
     }
 
     public string GetImageUrl(string category, int gameId, string dimensions)
     {
         string url = $"https://www.steamgriddb.com/api/v2/{category}/game/{gameId}?mimes=image/png";
-        if (!string.IsNullOrEmpty(dimensions))
-            url += "&dimensions=" + Uri.EscapeDataString(dimensions);
-
+        if (!string.IsNullOrEmpty(dimensions)) url += "&dimensions=" + Uri.EscapeDataString(dimensions);
         var result = SendAndParse<SgdbListResponse<SgdbImage>>(url);
-
-        if (result?.Data != null && result.Data.Count > 0)
-            return result.Data[0].Url;
-
-        return null;
+        return result?.Data != null && result.Data.Count > 0 ? result.Data[0].Url : null;
     }
 
     public void DownloadFile(string url, string destPath)
@@ -328,17 +381,11 @@ public class SteamGridDbClient
         {
             response.EnsureSuccessStatusCode();
             var bytes = response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
-
             string directory = Path.GetDirectoryName(destPath);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
             string tempPath = destPath + ".tmp";
             File.WriteAllBytes(tempPath, bytes);
-
-            if (File.Exists(destPath))
-                File.Delete(destPath);
-
+            if (File.Exists(destPath)) File.Delete(destPath);
             File.Move(tempPath, destPath);
         }
     }
@@ -347,29 +394,20 @@ public class SteamGridDbClient
 [DataContract]
 public class SgdbListResponse<T>
 {
-    [DataMember(Name = "success")]
-    public bool Success { get; set; }
-
-    [DataMember(Name = "data")]
-    public List<T> Data { get; set; }
+    [DataMember(Name = "success")] public bool Success { get; set; }
+    [DataMember(Name = "data")] public List<T> Data { get; set; }
 }
 
 [DataContract]
 public class SgdbGame
 {
-    [DataMember(Name = "id")]
-    public int Id { get; set; }
-
-    [DataMember(Name = "name")]
-    public string Name { get; set; }
+    [DataMember(Name = "id")] public int Id { get; set; }
+    [DataMember(Name = "name")] public string Name { get; set; }
 }
 
 [DataContract]
 public class SgdbImage
 {
-    [DataMember(Name = "id")]
-    public int Id { get; set; }
-
-    [DataMember(Name = "url")]
-    public string Url { get; set; }
+    [DataMember(Name = "id")] public int Id { get; set; }
+    [DataMember(Name = "url")] public string Url { get; set; }
 }
