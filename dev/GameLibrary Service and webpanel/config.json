@@ -7,6 +7,6 @@
     "image_cache": "data/images",
     "metadata": {
         "enabled": true,
-        "auto_lookup": false
+        "auto_lookup": true
     }
 }
