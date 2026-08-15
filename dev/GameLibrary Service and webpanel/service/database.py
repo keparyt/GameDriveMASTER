@@ -63,13 +63,51 @@ class Database:
         """Deprecated compatibility method. Scans must not use it."""
         return 0
 
-    def apply_scan_connectivity(self, discovered_uuids):
-        """Atomically apply the connectivity result of a completed scan.
+    def apply_drive_scan(self, uuid, name, description, letter, games, legacy_uuid=None):
+        """Commit one fully completed drive scan as one transaction."""
+        timestamp = now()
+        with self.lock:
+            row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
+            if not row and legacy_uuid:
+                row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (legacy_uuid,)).fetchone()
+                if row:
+                    self.conn.execute("UPDATE drives SET uuid=? WHERE id=?", (uuid, row["id"]))
+            if row:
+                drive_id = row["id"]
+                self.conn.execute(
+                    "UPDATE drives SET name=?,description=?,last_letter=?,connected=1,last_seen=? WHERE id=?",
+                    (name, description, letter, timestamp, drive_id),
+                )
+            else:
+                cursor = self.conn.execute(
+                    "INSERT INTO drives (uuid,name,description,last_letter,connected,first_seen,last_seen) VALUES (?,?,?,?,1,?,?)",
+                    (uuid, name, description, letter, timestamp, timestamp),
+                )
+                drive_id = cursor.lastrowid
 
-        An empty discovery result is deliberately rejected by the scanner before
-        this method is called. This prevents a failed/partial discovery pass from
-        turning every known drive offline.
-        """
+            seen_paths = set()
+            for game in games:
+                relative_path = game["relative_path"]
+                seen_paths.add(relative_path)
+                self.conn.execute("""
+                    INSERT INTO games (drive_id,name,relative_path,first_seen,last_seen)
+                    VALUES (?,?,?,?,?)
+                    ON CONFLICT(drive_id,relative_path) DO UPDATE SET
+                        name=excluded.name,last_seen=excluded.last_seen
+                """, (drive_id, game["name"], relative_path, timestamp, timestamp))
+
+            rows = self.conn.execute(
+                "SELECT id,relative_path FROM games WHERE drive_id=?", (drive_id,)
+            ).fetchall()
+            for game in rows:
+                if game["relative_path"] not in seen_paths:
+                    self.conn.execute("DELETE FROM games WHERE id=?", (game["id"],))
+
+            self.conn.commit()
+            return drive_id
+
+    def apply_scan_connectivity(self, discovered_uuids):
+        """Apply connectivity only after a complete discovery pass succeeds."""
         discovered = set(discovered_uuids or ())
         if not discovered:
             return 0
@@ -82,35 +120,14 @@ class Database:
                 if int(bool(row["connected"])) != new_state:
                     changed += 1
                 self.conn.execute(
-                    "UPDATE drives SET connected=?, last_seen=CASE WHEN ?=1 THEN ? ELSE last_seen END WHERE id=?",
+                    "UPDATE drives SET connected=?,last_seen=CASE WHEN ?=1 THEN ? ELSE last_seen END WHERE id=?",
                     (new_state, new_state, timestamp, row["id"]),
                 )
             self.conn.commit()
             return changed
 
     def upsert_drive(self, uuid, name, description, letter, legacy_uuid=None):
-        """Create/update one GameDrive partition as a successful scan result."""
-        timestamp = now()
-        with self.lock:
-            row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
-            if not row and legacy_uuid:
-                row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (legacy_uuid,)).fetchone()
-                if row:
-                    self.conn.execute("UPDATE drives SET uuid=? WHERE id=?", (uuid, row["id"]))
-            if row:
-                drive_id = row["id"]
-                self.conn.execute(
-                    "UPDATE drives SET name=?, description=?, last_letter=?, connected=1, last_seen=? WHERE id=?",
-                    (name, description, letter, timestamp, drive_id),
-                )
-            else:
-                cursor = self.conn.execute(
-                    "INSERT INTO drives (uuid,name,description,last_letter,connected,first_seen,last_seen) VALUES (?,?,?,?,1,?,?)",
-                    (uuid, name, description, letter, timestamp, timestamp),
-                )
-                drive_id = cursor.lastrowid
-            self.conn.commit()
-            return drive_id
+        return self.apply_drive_scan(uuid, name, description, letter, [], legacy_uuid=legacy_uuid)
 
     def upsert_game(self, drive_id, name, relative_path):
         timestamp = now()
