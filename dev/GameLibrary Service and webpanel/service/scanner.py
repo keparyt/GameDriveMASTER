@@ -54,16 +54,9 @@ def powershell_drive_value(drive, expression):
 
 
 def physical_serial(drive):
-    """Return the manufacturer's physical disk serial number.
-
-    This is intentionally preferred over Windows' volume serial because the
-    physical serial is normally printed on the HDD/SSD label and survives
-    drive-letter, partition, and filesystem changes.
-    """
+    """Return the manufacturer's physical disk serial number."""
     value = powershell_drive_value(drive, "$d.SerialNumber")
-    if value:
-        return value.strip()
-    return None
+    return value.strip() if value else None
 
 
 def physical_uuid(drive):
@@ -71,14 +64,12 @@ def physical_uuid(drive):
 
 
 def drive_id(drive):
-    # Physical serial is the primary identity. It is the value the user can
-    # physically read from the HDD/SSD label, so the same drive is recognized
-    # even if Windows assigns it a different letter.
+    # Physical serial is the primary identity. This is the value normally
+    # printed on the physical HDD/SSD label and survives drive-letter changes.
     serial = physical_serial(drive)
     if serial:
         return f"SERIAL:{serial}"
 
-    # Fallbacks are only used when Windows does not expose a physical serial.
     unique_id = physical_uuid(drive)
     if unique_id:
         return f"UUID:{unique_id}"
@@ -139,10 +130,17 @@ class Scanner:
                 seen_paths.add(relative_path)
                 self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
         except OSError as exc:
+            # Never remove anything when a scan cannot be completed. This is
+            # especially important for large/multi-drive libraries where a
+            # temporary filesystem error must not make games disappear.
             log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
             return True
 
-        self.db.remove_missing_games(drive_id_value, seen_paths)
+        # Do NOT delete missing games here. The library is persistent: a game
+        # disappearing from a scan can be a transient filesystem/drive issue,
+        # and metadata workers may still be processing that game. Keeping the
+        # record also means disconnected drives retain their complete library.
+        log.debug("Scan indexed %d game folders on %s; existing library entries preserved", len(seen_paths), drive)
         return True
 
     def scan(self):
