@@ -1,4 +1,5 @@
 import asyncio
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ class ConnectionManager:
         self.connections: dict[int, Connection] = {}
         self.tokens: dict[str, int] = {}
         self.cleanup_task: Optional[asyncio.Task] = None
+        self.ping_interval = 300  # 5 minutes
+        self.ping_timeout = 2
 
     def create_token(self, user_id: int) -> str:
         token = secrets.token_urlsafe(32)
@@ -57,6 +60,26 @@ class ConnectionManager:
         connection.last_seen = time.time()
         return True
 
+    async def ping_ip(self, ip: str) -> bool:
+        """Check whether a LAN device is reachable without the browser."""
+        if not self.is_allowed_ip(ip):
+            return False
+
+        if os.name == "nt":
+            command = ["ping", "-n", "1", "-w", str(self.ping_timeout * 1000), ip]
+        else:
+            command = ["ping", "-c", "1", "-W", str(self.ping_timeout), ip]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            return await process.wait() == 0
+        except (OSError, asyncio.TimeoutError):
+            return False
+
     def _get_role(self):
         for guild in self.bot.guilds:
             role = guild.get_role(self.role_id)
@@ -89,9 +112,9 @@ class ConnectionManager:
                 print(f"[Connection] Could not find user {user_id} in guild {guild.id}: {e}")
                 return
 
-        already_connected = user_id in self.connections and role in member.roles
+        already_had_role = role in member.roles
 
-        if role not in member.roles:
+        if not already_had_role:
             try:
                 await member.add_roles(role, reason="Home LAN connection established")
                 print(f"[Connection] Granted role '{role.name}' to {member} ({user_id})")
@@ -99,16 +122,16 @@ class ConnectionManager:
                 print(f"[Connection] Failed to grant role '{role.name}' to {member}: {e}")
                 return
 
-        # Only notify when the user actually establishes a new connection,
-        # not on every heartbeat.
-        if not already_connected:
-            connection = self.connections.get(user_id)
-            ip = connection.ip if connection else "unknown"
+        # Notify only when this is a newly established connection.
+        connection = self.connections.get(user_id)
+        if connection and not getattr(connection, "dm_notified", False):
+            # Store the notification state dynamically so heartbeats/pings don't DM repeatedly.
+            connection.dm_notified = True
             await self._send_dm(
                 user_id,
                 "🏠 **Home LAN connected**\n\n"
                 f"Your Home LAN access is now active.\n"
-                f"Detected LAN IP: `{ip}`",
+                f"Detected LAN IP: `{connection.ip}`",
             )
 
     async def remove_role(self, user_id: int):
@@ -135,23 +158,36 @@ class ConnectionManager:
         await self._send_dm(
             user_id,
             "🔴 **Home LAN disconnected**\n\n"
-            "Your Home LAN heartbeat expired, so your Home LAN access role was removed.",
+            "Your Home LAN device is no longer reachable on the LAN, so your Home LAN access role was removed.",
         )
 
     async def cleanup_loop(self):
+        # The browser is only used to discover the LAN IP. After the
+        # confirmation page closes, the bot keeps checking the device itself.
         while True:
-            await asyncio.sleep(60)
-            now = time.time()
-            expired = [
-                user_id
-                for user_id, connection in list(self.connections.items())
-                if now - connection.last_seen > self.timeout
-            ]
+            await asyncio.sleep(self.ping_interval)
 
-            for user_id in expired:
-                self.connections.pop(user_id, None)
-                await self.remove_role(user_id)
-                print(f"[Connection] User {user_id} disconnected from LAN")
+            for user_id, connection in list(self.connections.items()):
+                reachable = await self.ping_ip(connection.ip)
+
+                if reachable:
+                    connection.last_seen = time.time()
+                    print(
+                        f"[Connection] LAN ping OK user_id={user_id} ip={connection.ip}"
+                    )
+                    await self.grant_role(user_id)
+                    continue
+
+                elapsed = time.time() - connection.last_seen
+                print(
+                    f"[Connection] LAN ping FAILED user_id={user_id} "
+                    f"ip={connection.ip} elapsed={int(elapsed)}s"
+                )
+
+                if elapsed > self.timeout:
+                    self.connections.pop(user_id, None)
+                    await self.remove_role(user_id)
+                    print(f"[Connection] User {user_id} disconnected from LAN")
 
     def start_cleanup(self):
         if self.cleanup_task is None:
