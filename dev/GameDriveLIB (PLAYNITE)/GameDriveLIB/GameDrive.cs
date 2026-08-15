@@ -22,6 +22,7 @@ public class GameDriveLibrary : LibraryPlugin
     private readonly HttpListener libraryServer = new HttpListener();
     private Thread libraryServerThread;
     private const string LibraryApiPrefix = "http://127.0.0.1:38123/";
+    private volatile bool libraryReady;
 
     public override Guid Id { get; } =
         Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
@@ -31,7 +32,36 @@ public class GameDriveLibrary : LibraryPlugin
     public GameDriveLibrary(IPlayniteAPI api) : base(api)
     {
         this.api = api;
+        // Do not start the HTTP listener from the constructor. Playnite is still
+        // constructing/loading extensions at this point and Database.Games may
+        // not be open yet. Start it from OnApplicationStarted instead.
+    }
+
+    public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
+    {
+        libraryReady = false;
         StartLibraryApi();
+        logger.Info("GameDrive: Playnite application started; waiting for library database to become ready.");
+    }
+
+    public override void OnLibraryUpdated(OnLibraryUpdatedEventArgs args)
+    {
+        libraryReady = true;
+        try
+        {
+            int installed = api.Database.Games.Count(g => g != null && g.IsInstalled);
+            logger.Info($"GameDrive: Playnite library update complete; {installed} installed game(s) available.");
+        }
+        catch (Exception ex)
+        {
+            logger.Warn($"GameDrive: library updated but installed-game count could not be read: {ex.Message}");
+        }
+    }
+
+    public override void OnApplicationStopped(OnApplicationStoppedEventArgs args)
+    {
+        libraryReady = false;
+        StopLibraryApi();
     }
 
     public override IEnumerable<GameMetadata> GetGames(LibraryGetGamesArgs args)
@@ -149,6 +179,9 @@ public class GameDriveLibrary : LibraryPlugin
 
     private void StartLibraryApi()
     {
+        if (libraryServer.IsListening)
+            return;
+
         try
         {
             libraryServer.Prefixes.Add(LibraryApiPrefix);
@@ -157,10 +190,33 @@ public class GameDriveLibrary : LibraryPlugin
             libraryServerThread.Start();
             logger.Info($"GameDrive: Playnite library API listening on {LibraryApiPrefix}");
         }
+        catch (HttpListenerException ex)
+        {
+            logger.Error(ex, "GameDrive: failed to start Playnite library API. The port may already be in use.");
+        }
         catch (Exception ex)
         {
             logger.Error(ex, "GameDrive: failed to start Playnite library API.");
         }
+    }
+
+    private void StopLibraryApi()
+    {
+        try
+        {
+            if (libraryServer.IsListening)
+                libraryServer.Stop();
+        }
+        catch { }
+
+        try
+        {
+            libraryServer.Close();
+        }
+        catch { }
+
+        libraryServerThread = null;
+        logger.Info("GameDrive: Playnite library API stopped.");
     }
 
     private void LibraryApiLoop()
@@ -195,12 +251,43 @@ public class GameDriveLibrary : LibraryPlugin
 
             if (path == "/health")
             {
-                WriteJson(context, new { ok = true, source = "PlayniteApi.Database.Games" });
+                bool databaseOpen = false;
+                int gameCount = 0;
+                int installedCount = 0;
+                try
+                {
+                    databaseOpen = api.Database.IsOpen;
+                    if (databaseOpen)
+                    {
+                        gameCount = api.Database.Games.Count;
+                        installedCount = api.Database.Games.Count(g => g != null && g.IsInstalled);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.Warn($"GameDrive: health database check failed: {ex.Message}");
+                }
+
+                WriteJson(context, new
+                {
+                    ok = true,
+                    source = "PlayniteApi.Database.Games",
+                    ready = libraryReady && databaseOpen,
+                    databaseOpen,
+                    gameCount,
+                    installedCount
+                });
                 return;
             }
 
             if (path == "/games" && context.Request.HttpMethod == "GET")
             {
+                if (!api.Database.IsOpen)
+                {
+                    WriteJson(context, new { ok = false, error = "playnite_database_not_ready" }, 503);
+                    return;
+                }
+
                 // This is the authoritative Playnite library. The service must not read games.db itself.
                 var games = api.Database.Games
                     .Where(g => g != null && g.IsInstalled)
