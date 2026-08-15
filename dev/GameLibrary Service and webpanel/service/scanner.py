@@ -55,13 +55,11 @@ def powershell_drive_value(drive, expression):
 
 
 def physical_serial(drive):
-    """Return the manufacturer's physical disk serial number."""
     value = powershell_drive_value(drive, "$d.SerialNumber")
     return value.strip() if value else None
 
 
 def partition_unique_id(drive):
-    """Return Windows' stable unique ID for this partition."""
     value = powershell_drive_value(drive, "$p.UniqueId")
     return value.strip() if value else None
 
@@ -75,22 +73,14 @@ def partition_number(drive):
 
 
 def drive_id(drive):
-    """Return a partition identity, not just a physical-disk identity.
-
-    A 2 TB HDD can contain several drive letters/partitions. Using only the
-    physical disk serial would make all of those partitions overwrite the same
-    database row. Prefer the partition UniqueId, then fall back to the physical
-    serial + partition number, then the volume serial.
-    """
+    """Return a stable identity for the mounted partition."""
     partition_uid = partition_unique_id(drive)
     if partition_uid:
         return f"PARTITION:{partition_uid}"
-
     serial = physical_serial(drive)
     number = partition_number(drive)
     if serial and number is not None:
         return f"PARTITION:{serial}:{number}"
-
     volume = volume_serial(drive)
     if volume:
         return f"VOL:{volume}"
@@ -98,11 +88,8 @@ def drive_id(drive):
 
 
 def legacy_drive_id(drive):
-    """Return the pre-partition-aware identity for database migration."""
     serial = physical_serial(drive)
-    if serial:
-        return f"SERIAL:{serial}"
-    return None
+    return f"SERIAL:{serial}" if serial else None
 
 
 def read_ini(path):
@@ -143,11 +130,7 @@ class Scanner:
         legacy_uid = legacy_drive_id(drive)
         log.debug("Partition identity: letter=%s identity=%s", drive[0], uid)
         drive_id_value = self.db.upsert_drive(
-            uid,
-            info["name"],
-            info["description"],
-            drive[0],
-            legacy_uuid=legacy_uid,
+            uid, info["name"], info["description"], drive[0], legacy_uuid=legacy_uid
         )
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
@@ -170,13 +153,33 @@ class Scanner:
         return True
 
     def scan(self):
-        self.db.mark_disconnected()
-        found = 0
-        for drive in drive_letters():
+        """Perform a discovery pass without mutating connectivity for missing/failed results.
+
+        A drive is marked connected only by a successful, complete drive scan.
+        Missing drives are resolved after the full discovery pass. If discovery
+        itself fails or returns no usable GameDrive partitions, the last known
+        connectivity state is preserved.
+        """
+        discovered = set()
+        scanned = 0
+        letters = drive_letters()
+        if not letters:
+            log.warning("Drive discovery unavailable; preserving last known connectivity state")
+            return 0
+
+        for drive in letters:
             try:
                 if self.scan_drive(drive):
-                    found += 1
+                    uid = drive_id(drive)
+                    if uid:
+                        discovered.add(uid)
+                        scanned += 1
             except Exception:
-                log.exception("Error scanning %s", drive)
-        log.info("Scan finished: %d GameDrive partition(s) online", found)
-        return found
+                log.exception("Error scanning %s; preserving its previous state", drive)
+
+        if scanned > 0:
+            changed = self.db.apply_scan_connectivity(discovered)
+            log.info("Scan finished: %d GameDrive partition(s) online; connectivity updates=%d", scanned, changed)
+        else:
+            log.warning("Scan produced no valid GameDrive results; preserving last known connectivity state")
+        return scanned
