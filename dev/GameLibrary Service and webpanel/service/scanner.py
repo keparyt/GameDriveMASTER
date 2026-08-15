@@ -34,6 +34,7 @@ def volume_serial(drive):
 
 
 def powershell_drive_value(drive, expression):
+    """Evaluate an expression against both the partition ($p) and disk ($d)."""
     letter = drive[0]
     command = (
         f"$p=Get-Partition -DriveLetter '{letter}' -ErrorAction SilentlyContinue; "
@@ -59,23 +60,48 @@ def physical_serial(drive):
     return value.strip() if value else None
 
 
-def physical_uuid(drive):
-    return powershell_drive_value(drive, "$d.UniqueId")
+def partition_unique_id(drive):
+    """Return Windows' stable unique ID for this partition."""
+    value = powershell_drive_value(drive, "$p.UniqueId")
+    return value.strip() if value else None
+
+
+def partition_number(drive):
+    value = powershell_drive_value(drive, "$p.PartitionNumber")
+    try:
+        return int(value) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def drive_id(drive):
-    # Physical serial is the primary identity. This is the value normally
-    # printed on the physical HDD/SSD label and survives drive-letter changes.
-    serial = physical_serial(drive)
-    if serial:
-        return f"SERIAL:{serial}"
+    """Return a partition identity, not just a physical-disk identity.
 
-    unique_id = physical_uuid(drive)
-    if unique_id:
-        return f"UUID:{unique_id}"
+    A 2 TB HDD can contain several drive letters/partitions. Using only the
+    physical disk serial would make all of those partitions overwrite the same
+    database row. Prefer the partition UniqueId, then fall back to the physical
+    serial + partition number, then the volume serial.
+    """
+    partition_uid = partition_unique_id(drive)
+    if partition_uid:
+        return f"PARTITION:{partition_uid}"
+
+    serial = physical_serial(drive)
+    number = partition_number(drive)
+    if serial and number is not None:
+        return f"PARTITION:{serial}:{number}"
+
     volume = volume_serial(drive)
     if volume:
         return f"VOL:{volume}"
+    return None
+
+
+def legacy_drive_id(drive):
+    """Return the pre-partition-aware identity for database migration."""
+    serial = physical_serial(drive)
+    if serial:
+        return f"SERIAL:{serial}"
     return None
 
 
@@ -111,11 +137,18 @@ class Scanner:
 
         uid = drive_id(drive)
         if not uid:
-            log.warning("Could not identify drive %s", drive)
+            log.warning("Could not identify drive partition %s", drive)
             return False
 
-        log.debug("Drive identity: letter=%s identity=%s", drive[0], uid)
-        drive_id_value = self.db.upsert_drive(uid, info["name"], info["description"], drive[0])
+        legacy_uid = legacy_drive_id(drive)
+        log.debug("Partition identity: letter=%s identity=%s", drive[0], uid)
+        drive_id_value = self.db.upsert_drive(
+            uid,
+            info["name"],
+            info["description"],
+            drive[0],
+            legacy_uuid=legacy_uid,
+        )
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
             log.warning("Game folder unavailable on %s; keeping existing indexed games", drive)
@@ -130,16 +163,9 @@ class Scanner:
                 seen_paths.add(relative_path)
                 self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
         except OSError as exc:
-            # Never remove anything when a scan cannot be completed. This is
-            # especially important for large/multi-drive libraries where a
-            # temporary filesystem error must not make games disappear.
             log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
             return True
 
-        # Do NOT delete missing games here. The library is persistent: a game
-        # disappearing from a scan can be a transient filesystem/drive issue,
-        # and metadata workers may still be processing that game. Keeping the
-        # record also means disconnected drives retain their complete library.
         log.debug("Scan indexed %d game folders on %s; existing library entries preserved", len(seen_paths), drive)
         return True
 
@@ -152,5 +178,5 @@ class Scanner:
                     found += 1
             except Exception:
                 log.exception("Error scanning %s", drive)
-        log.info("Scan finished: %d GameDrive(s) online", found)
+        log.info("Scan finished: %d GameDrive partition(s) online", found)
         return found
