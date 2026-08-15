@@ -15,11 +15,13 @@ const trailerSection = document.querySelector("#trailer-section");
 const launchButton = document.querySelector("#launch-game");
 const launchStatus = document.querySelector("#launch-status");
 let selectedGameId = null;
+let closeTimer = null;
 
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c])); }
 function showError(message) { errorBox.textContent = message; errorBox.style.display = "block"; }
 function hideError() { errorBox.textContent = ""; errorBox.style.display = "none"; }
 function formatBytes(bytes) { let n=Number(bytes||0),u=["B","GB","TB","PB"],i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n ? `${n>=10||i===0?Math.round(n):n.toFixed(1)} ${u[i]}` : "—"; }
+function clearCloseTimer() { if(closeTimer){clearInterval(closeTimer);closeTimer=null;} }
 
 function createDriveCard(drive) {
     const connected=Boolean(drive.connected), letter=drive.last_letter?`${drive.last_letter}:`:"—";
@@ -45,8 +47,20 @@ async function loadGames() {
     if(!response.ok) throw new Error(`HTTP ${response.status}`);
     const data=await response.json(); grid.innerHTML=data.length?data.map(createCard).join(""):`<div class="empty">No games found.</div>`;
 }
+function startConnectedCountdown() {
+    clearCloseTimer();
+    let remaining=10;
+    launchButton.disabled=true;
+    launchStatus.className="launch-status countdown-status";
+    launchStatus.textContent=`Connected · closing in ${remaining}s`;
+    closeTimer=setInterval(()=>{
+        remaining--;
+        if(remaining<=0){ clearCloseTimer(); closeGame(); return; }
+        launchStatus.textContent=`Connected · closing in ${remaining}s`;
+    },1000);
+}
 async function openGame(id) {
-    selectedGameId=id; modal.classList.add("open"); modal.setAttribute("aria-hidden","false"); document.body.classList.add("modal-open");
+    clearCloseTimer(); selectedGameId=id; modal.classList.add("open"); modal.setAttribute("aria-hidden","false"); document.body.classList.add("modal-open");
     detailTitle.textContent="Loading…"; detailLogo.style.display="none"; detailHero.style.backgroundImage="none"; detailDescription.textContent="Loading Steam details…"; detailMeta.textContent=""; trailerSection.style.display="none"; detailTrailer.pause(); detailTrailer.removeAttribute("src"); launchButton.disabled=true; launchStatus.textContent="";
     try {
         const response=await fetch(`/api/games/${id}/details`); if(!response.ok) throw new Error("Unable to load game details");
@@ -57,17 +71,17 @@ async function openGame(id) {
         detailMeta.textContent=[game.release_date,game.drive_name,game.last_letter?`${game.last_letter}:`:null].filter(Boolean).join(" · ");
         detailDescription.innerHTML=game.description||"No description available.";
         if(game.trailer){detailTrailer.src=game.trailer;trailerSection.style.display="block";}
-        launchButton.disabled=!game.connected;
-        launchStatus.textContent=game.connected?"":"Drive offline";
+        if(game.connected) startConnectedCountdown();
+        else { launchButton.disabled=true; launchStatus.className="launch-status"; launchStatus.textContent="Drive offline"; }
     } catch(error){ console.error(error); detailTitle.textContent="Unable to load game"; detailDescription.textContent=error.message; launchButton.disabled=true; }
 }
-function closeGame(){ modal.classList.remove("open"); modal.setAttribute("aria-hidden","true"); document.body.classList.remove("modal-open"); detailTrailer.pause(); detailTrailer.removeAttribute("src"); selectedGameId=null; }
+function closeGame(){ clearCloseTimer(); modal.classList.remove("open"); modal.setAttribute("aria-hidden","true"); document.body.classList.remove("modal-open"); detailTrailer.pause(); detailTrailer.removeAttribute("src"); selectedGameId=null; }
 
 grid.addEventListener("click",e=>{const card=e.target.closest(".card");if(card)openGame(Number(card.dataset.gameId));});
 grid.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.closest(".card")){e.preventDefault();openGame(Number(e.target.closest(".card").dataset.gameId));}});
 document.querySelectorAll("[data-close-game]").forEach(el=>el.addEventListener("click",closeGame));
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal.classList.contains("open"))closeGame();});
-launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;launchButton.disabled=true;launchStatus.textContent="Starting…";try{const r=await fetch(`/api/games/${selectedGameId}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);launchStatus.textContent="Game started";}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`;}finally{setTimeout(()=>{launchButton.disabled=false;},500);}});
+launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;clearCloseTimer();launchButton.disabled=true;launchStatus.textContent="Starting…";try{const r=await fetch(`/api/games/${selectedGameId}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);launchStatus.textContent="Game started";}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`;}finally{setTimeout(()=>{if(selectedGameId)launchButton.disabled=false;},500);}});
 
 async function load(){hideError();try{await loadDrives();await loadGames();}catch(e){console.error(e);showError("Unable to load the complete Game Library.");}}
 let timer=null;search.addEventListener("input",()=>{clearTimeout(timer);timer=setTimeout(loadGames,150);});online.addEventListener("change",loadGames);load();
