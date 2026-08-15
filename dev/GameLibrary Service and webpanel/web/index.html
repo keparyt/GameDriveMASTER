@@ -7,6 +7,7 @@
 <title>GameDrive</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="stylesheet" href="/theme.css?v=gold-luxury-3">
+<link rel="stylesheet" href="/network.css">
 </head>
 <body>
 <header class="topbar">
@@ -21,6 +22,22 @@
 </header>
 
 <main>
+  <section id="network-panel" class="network-panel" hidden>
+    <div class="network-qr-wrap">
+      <img id="network-qr" class="network-qr" alt="QR code to open GameDrive on this network">
+    </div>
+    <div class="network-copy">
+      <span class="section-kicker">LOCAL ACCESS</span>
+      <h2>Use GameDrive on your phone</h2>
+      <p>Scan this QR code to open the library from another device on the same network.</p>
+      <code id="network-url"></code>
+      <div class="network-actions">
+        <button id="playnite-fullscreen" class="network-button" type="button">OPEN PLAYNITE FULLSCREEN</button>
+        <span id="playnite-status" class="network-status"></span>
+      </div>
+    </div>
+  </section>
+
   <section class="workspace-head">
     <div class="page-title">
       <span class="eyebrow"><i></i> GAME LIBRARY</span>
@@ -89,5 +106,6 @@
 
 <div id="drive-notification" class="drive-notification"></div>
 <script src="/app.js"></script>
+<script src="/network.js"></script>
 </body>
 </html>
