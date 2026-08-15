@@ -97,10 +97,7 @@ def read_ini(path):
         if not config.has_section("Drive"):
             log.warning("%s does not contain [Drive]", path)
             return None
-        return {
-            "name": config.get("Drive", "name", fallback="").strip(),
-            "description": config.get("Drive", "description", fallback="").strip()
-        }
+        return {"name": config.get("Drive", "name", fallback="").strip(), "description": config.get("Drive", "description", fallback="").strip()}
     except Exception as exc:
         log.warning("Cannot read %s: %s", path, exc)
         return None
@@ -120,47 +117,27 @@ class Scanner:
         info = read_ini(config_file)
         if not info:
             return None
-
         uid = drive_id(drive)
         if not uid:
             log.warning("Could not identify drive partition %s", drive)
             return None
-
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
             log.warning("Game folder unavailable on %s; scan result is incomplete", drive)
             return None
-
         games = []
         try:
             for item in games_root.iterdir():
                 if not item.is_dir() or not item.name.strip():
                     continue
-                games.append({
-                    "name": item.name.strip(),
-                    "relative_path": item.relative_to(root).as_posix(),
-                })
+                games.append({"name": item.name.strip(), "relative_path": item.relative_to(root).as_posix()})
         except OSError as exc:
             log.warning("Cannot fully scan %s; preserving previous state: %s", games_root, exc)
             return None
-
-        return {
-            "uuid": uid,
-            "legacy_uuid": legacy_drive_id(drive),
-            "name": info["name"],
-            "description": info["description"],
-            "letter": drive[0],
-            "games": games,
-        }
+        return {"uuid": uid, "legacy_uuid": legacy_drive_id(drive), "name": info["name"], "description": info["description"], "letter": drive[0], "games": games}
 
     def scan(self):
-        """Discover first, then atomically apply only complete results.
-
-        Scanning is deliberately side-effect free until every successfully
-        discovered GameDrive has a complete game-folder result. A failed,
-        timed-out, or partial scan therefore cannot create transient offline
-        states or replace the current library with partial data.
-        """
+        """Discover first, then atomically apply only complete results."""
         letters = drive_letters()
         if not letters:
             log.warning("Drive discovery unavailable; preserving last known state")
@@ -182,23 +159,11 @@ class Scanner:
         discovered = set()
         for result in results:
             try:
-                self.db.apply_drive_scan(
-                    result["uuid"],
-                    result["name"],
-                    result["description"],
-                    result["letter"],
-                    result["games"],
-                    legacy_uuid=result["legacy_uuid"],
-                )
+                self.db.apply_drive_scan(result["uuid"], result["name"], result["description"], result["letter"], result["games"], legacy_uuid=result["legacy_uuid"])
                 discovered.add(result["uuid"])
             except Exception:
                 log.exception("Could not commit completed scan for %s", result["letter"])
 
-        # Only a completed discovery pass is authoritative for connectivity.
-        # Drives not found in this completed pass are therefore genuinely absent.
-        changed = self.db.apply_scan_connectivity(discovered)
-        log.info(
-            "Scan finished: %d complete GameDrive partition(s); connectivity updates=%d",
-            len(discovered), changed,
-        )
+        changed = self.db.apply_scan_connectivity(discovered, letters)
+        log.info("Scan finished: %d complete GameDrive partition(s); connectivity updates=%d", len(discovered), changed)
         return len(discovered)
