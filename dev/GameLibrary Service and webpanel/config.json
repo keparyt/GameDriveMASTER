@@ -9,5 +9,11 @@
     "metadata": {
         "enabled": true,
         "auto_lookup": true
+    },
+    "playnite": {
+        "enabled": true,
+        "path": "",
+        "libraryPath": "",
+        "refreshOnGameDriveChange": true
     }
 }
