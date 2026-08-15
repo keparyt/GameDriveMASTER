@@ -1,0 +1,7 @@
+[Directories]
+Games=Games
+
+[SteamGridDB]
+; Get your own SteamGridDB API key and put it here.
+; Keep this file private if it contains a real key.
+api_key=
