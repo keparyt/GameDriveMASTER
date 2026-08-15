@@ -1,4 +1,3 @@
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,7 +6,6 @@ from discord.ext import commands
 class ConnectionView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
-
         self.cog = cog
 
     @discord.ui.button(
@@ -21,19 +19,13 @@ class ConnectionView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ):
-        manager = self.cog.manager
-
-        token = manager.create_token(
+        token = self.cog.manager.create_token(
             interaction.user.id
         )
 
-        url = (
-            f"{self.cog.base_url}"
-            f"/connect/{token}"
-        )
+        url = f"{self.cog.base_url}/connect/{token}"
 
         view = discord.ui.View()
-
         view.add_item(
             discord.ui.Button(
                 label="Open LAN Connection",
@@ -66,9 +58,7 @@ class Connection(commands.Cog):
         name="connection-panel",
         description="Send the Home LAN connection panel.",
     )
-    @app_commands.default_permissions(
-        administrator=True
-    )
+    @app_commands.default_permissions(administrator=True)
     async def connection_panel(
         self,
         interaction: discord.Interaction,
@@ -76,17 +66,13 @@ class Connection(commands.Cog):
         embed = discord.Embed(
             title="🏠 Home LAN Access",
             description=(
-                "Connect to the home LAN to receive "
-                "the connected role.\n\n"
-                "Your role remains active while your "
-                "LAN connection is detected."
+                "Connect to the home LAN to receive the connected role.\n\n"
+                "Your role remains active while your LAN connection is detected."
             ),
             color=discord.Color.green(),
         )
 
-        embed.set_footer(
-            text="Home LAN connection"
-        )
+        embed.set_footer(text="Home LAN connection")
 
         await interaction.channel.send(
             embed=embed,
@@ -99,20 +85,12 @@ class Connection(commands.Cog):
         )
 
 
-async def setup(
-    bot: commands.Bot,
-    manager=None,
-    base_url="http://192.168.28.7:9999",
-):
+async def setup(bot: commands.Bot):
     cog = Connection(
         bot,
-        manager,
-        base_url,
+        bot.connection_manager,
+        bot.lan_base_url,
     )
 
     await bot.add_cog(cog)
-
-    # Persistent button
-    bot.add_view(
-        ConnectionView(cog)
-    )
+    bot.add_view(ConnectionView(cog))
