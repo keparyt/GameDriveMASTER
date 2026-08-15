@@ -44,6 +44,7 @@ class Database:
                 relative_path TEXT NOT NULL,
                 first_seen TEXT NOT NULL,
                 last_seen TEXT NOT NULL,
+                available INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY(drive_id) REFERENCES drives(id) ON DELETE CASCADE,
                 UNIQUE(drive_id, relative_path)
             );
@@ -57,15 +58,31 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_drives_uuid ON drives(uuid);
             CREATE INDEX IF NOT EXISTS idx_metadata_title ON metadata(title COLLATE NOCASE);
             """)
+
+            # Migrate databases created before per-game availability existed.
+            columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(games)").fetchall()}
+            if "available" not in columns:
+                self.conn.execute("ALTER TABLE games ADD COLUMN available INTEGER NOT NULL DEFAULT 1")
             self.conn.commit()
 
-    def mark_disconnected(self):
+    def get_drives(self):
         with self.lock:
-            self.conn.execute("UPDATE drives SET connected=0")
+            return self.conn.execute(
+                "SELECT id,uuid,name,description,last_letter,connected,last_seen FROM drives"
+            ).fetchall()
+
+    def mark_drive_offline(self, drive_id):
+        """Commit OFFLINE only after the scanner has explicit OS-level evidence."""
+        with self.lock:
+            row = self.conn.execute("SELECT connected FROM drives WHERE id=?", (drive_id,)).fetchone()
+            if not row or not row["connected"]:
+                return False
+            self.conn.execute("UPDATE drives SET connected=0 WHERE id=?", (drive_id,))
             self.conn.commit()
+            return True
 
     def upsert_drive(self, uuid, name, description, letter, legacy_uuid=None):
-        """Create/update one GameDrive partition."""
+        """Record a positively identified, accessible GameDrive partition as online."""
         timestamp = now()
         with self.lock:
             row = self.conn.execute("SELECT id FROM drives WHERE uuid=?", (uuid,)).fetchone()
@@ -88,22 +105,51 @@ class Database:
             self.conn.commit()
             return drive_id
 
+    def apply_complete_scan(self, drive_id, games):
+        """Atomically apply a complete, authoritative game-folder scan.
+
+        Positive observations and removals are committed together. A caller must
+        never invoke this method for a partial or failed scan.
+        """
+        timestamp = now()
+        seen_paths = {item["relative_path"] for item in games}
+        with self.lock:
+            for item in games:
+                self.conn.execute("""
+                    INSERT INTO games (drive_id,name,relative_path,first_seen,last_seen,available)
+                    VALUES (?,?,?,?,?,1)
+                    ON CONFLICT(drive_id,relative_path) DO UPDATE SET
+                        name=excluded.name,last_seen=excluded.last_seen,available=1
+                """, (drive_id, item["name"], item["relative_path"], timestamp, timestamp))
+
+            rows = self.conn.execute(
+                "SELECT id,relative_path FROM games WHERE drive_id=?", (drive_id,)
+            ).fetchall()
+            for row in rows:
+                if row["relative_path"] not in seen_paths:
+                    self.conn.execute("UPDATE games SET available=0 WHERE id=?", (row["id"],))
+
+            self.conn.commit()
+
     def upsert_game(self, drive_id, name, relative_path):
+        """Record a positively observed game without inferring anything about missing games."""
         timestamp = now()
         with self.lock:
             self.conn.execute("""
-                INSERT INTO games (drive_id,name,relative_path,first_seen,last_seen)
-                VALUES (?,?,?,?,?)
-                ON CONFLICT(drive_id,relative_path) DO UPDATE SET name=excluded.name,last_seen=excluded.last_seen
+                INSERT INTO games (drive_id,name,relative_path,first_seen,last_seen,available)
+                VALUES (?,?,?,?,?,1)
+                ON CONFLICT(drive_id,relative_path) DO UPDATE SET
+                    name=excluded.name,last_seen=excluded.last_seen,available=1
             """, (drive_id, name, relative_path, timestamp, timestamp))
             self.conn.commit()
 
     def remove_missing_games(self, drive_id, seen_paths):
+        """Legacy helper: only use when the caller has a complete scan."""
         with self.lock:
             rows = self.conn.execute("SELECT id,relative_path FROM games WHERE drive_id=?", (drive_id,)).fetchall()
             for row in rows:
                 if row["relative_path"] not in seen_paths:
-                    self.conn.execute("DELETE FROM games WHERE id=?", (row["id"],))
+                    self.conn.execute("UPDATE games SET available=0 WHERE id=?", (row["id"],))
             self.conn.commit()
 
     def search(self, query="", connected_only=False):
@@ -115,22 +161,25 @@ class Database:
             value = f"%{query}%"
             params.extend([value, value])
         if connected_only:
-            conditions.append("d.connected=1")
+            conditions.append("d.connected=1 AND g.available=1")
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         with self.lock:
             return self.conn.execute(f"""
-                SELECT g.id,g.name,g.relative_path,d.uuid,d.name AS drive_name,d.description AS drive_description,
-                       d.last_letter,d.connected,d.last_seen,m.title,m.app_id,m.capsule,m.logo,m.hero,m.cover,
+                SELECT g.id,g.name,g.relative_path,g.available,d.uuid,d.name AS drive_name,d.description AS drive_description,
+                       d.last_letter,d.connected,d.last_seen,
+                       CASE WHEN d.connected=1 AND g.available=1 THEN 1 ELSE 0 END AS connected,
+                       m.title,m.app_id,m.capsule,m.logo,m.hero,m.cover,
                        m.release_date,m.description AS game_description
                 FROM games g JOIN drives d ON d.id=g.drive_id LEFT JOIN metadata m ON m.game_id=g.id
                 {where}
-                ORDER BY d.connected DESC, COALESCE(m.title,g.name) COLLATE NOCASE
+                ORDER BY d.connected DESC, g.available DESC, COALESCE(m.title,g.name) COLLATE NOCASE
             """, params).fetchall()
 
     def get_game(self, game_id):
         with self.lock:
             return self.conn.execute("""
                 SELECT g.*,d.uuid,d.name AS drive_name,d.description AS drive_description,d.last_letter,d.connected,d.last_seen,
+                       CASE WHEN d.connected=1 AND g.available=1 THEN 1 ELSE 0 END AS connected,
                        m.title,m.app_id,m.capsule,m.logo,m.hero,m.cover,m.release_date,m.description AS game_description
                 FROM games g JOIN drives d ON d.id=g.drive_id LEFT JOIN metadata m ON m.game_id=g.id WHERE g.id=?
             """, (game_id,)).fetchone()
