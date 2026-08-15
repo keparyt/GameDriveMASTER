@@ -125,7 +125,17 @@ class Database:
             """, (game_id,)).fetchone()
 
     def set_metadata(self, data_game_id, data):
+        """Save metadata only while the game row still exists.
+
+        The artwork worker runs asynchronously while the scanner can delete games
+        that disappeared from a drive. A queued lookup may therefore finish after
+        its game was removed. Treat that as a stale lookup instead of raising a
+        foreign-key error.
+        """
         with self.lock:
+            game = self.conn.execute("SELECT id FROM games WHERE id=?", (data_game_id,)).fetchone()
+            if not game:
+                return False
             self.conn.execute("""
                 INSERT INTO metadata (game_id,title,app_id,capsule,logo,hero,cover,release_date,description,updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -134,6 +144,7 @@ class Database:
                     description=excluded.description,updated_at=excluded.updated_at
             """, (data_game_id,data.get("title"),data.get("app_id"),data.get("capsule"),data.get("logo"),data.get("hero"),data.get("cover"),data.get("release_date"),data.get("description"),now()))
             self.conn.commit()
+            return True
 
     def close(self):
         with self.lock:
