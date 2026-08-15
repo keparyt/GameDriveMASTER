@@ -14,7 +14,6 @@ from config import (
 )
 
 from server.connections import ConnectionManager
-
 from utils.helper import log
 
 
@@ -25,7 +24,7 @@ class Bot(commands.Bot):
 
         super().__init__(
             command_prefix="!",
-            intents=intents
+            intents=intents,
         )
 
         self.connection_manager = ConnectionManager(
@@ -35,16 +34,13 @@ class Bot(commands.Bot):
             timeout=LAN_CONNECTION_TIMEOUT,
         )
 
+        self.lan_base_url = LAN_BASE_URL
+
     async def setup_hook(self):
         log("Loading commands...")
 
         await self.load_extension("commands.admin")
-
-        await self.load_extension(
-            "commands.connection",
-            manager=self.connection_manager,
-            base_url=LAN_BASE_URL,
-        )
+        await self.load_extension("commands.connection")
 
         log("Loading events...")
 
@@ -54,7 +50,6 @@ class Bot(commands.Bot):
         log("All extensions loaded.")
 
         self.connection_manager.start_cleanup()
-
 
         synced = await self.tree.sync()
 
