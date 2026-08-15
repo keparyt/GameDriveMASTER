@@ -2,159 +2,95 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Home LAN Connection</title>
-
     <style>
         body {
             margin: 0;
             min-height: 100vh;
-
             display: flex;
             align-items: center;
             justify-content: center;
-
             background: #111827;
             color: white;
-
-            font-family:
-                Arial,
-                Helvetica,
-                sans-serif;
+            font-family: Arial, Helvetica, sans-serif;
         }
-
         .card {
             width: min(90%, 500px);
-
             padding: 40px;
-
             background: #1f2937;
             border-radius: 16px;
-
             text-align: center;
-
-            box-shadow:
-                0 20px 50px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
         }
-
-        .icon {
-            font-size: 60px;
-            margin-bottom: 20px;
-        }
-
-        h1 {
-            margin-bottom: 10px;
-        }
-
+        .icon { font-size: 60px; margin-bottom: 20px; }
+        h1 { margin-bottom: 10px; }
         #status {
             margin-top: 25px;
             padding: 15px;
-
             border-radius: 10px;
-
             background: #374151;
         }
-
-        .connected {
-            background: #064e3b !important;
-        }
-
-        .error {
-            background: #7f1d1d !important;
-        }
+        .connected { background: #064e3b !important; }
+        .error { background: #7f1d1d !important; }
     </style>
 </head>
-
 <body>
-
 <div class="card">
-
-    <div class="icon">
-        🏠
-    </div>
-
+    <div class="icon">🏠</div>
     <h1>Home LAN Connection</h1>
-
-    <p>
-        This page keeps your Discord Home LAN
-        connection active.
-    </p>
-
-    <div id="status">
-        Connecting...
-    </div>
-
+    <p>This page keeps your Discord Home LAN connection active.</p>
+    <div id="status">Connecting...</div>
 </div>
-
 <script>
-
-const statusElement =
-    document.getElementById("status");
-
-const token =
-    window.location.pathname
-        .split("/")
-        .filter(Boolean)
-        .pop();
-
+const statusElement = document.getElementById("status");
+const token = window.location.pathname.split("/").filter(Boolean).pop();
+let connected = false;
+let closeTimer = null;
 
 async function heartbeat() {
-
     try {
-
-        const response = await fetch(
-            `/api/heartbeat/${token}`,
-            {
-                method: "POST",
-                cache: "no-store"
-            }
-        );
-
-        const data =
-            await response.json();
+        const response = await fetch(`/api/heartbeat/${token}`, {
+            method: "POST",
+            cache: "no-store"
+        });
+        const data = await response.json();
 
         if (data.connected) {
+            connected = true;
+            statusElement.className = "connected";
+            statusElement.textContent = "🟢 Connected to the Home LAN";
 
-            statusElement.textContent =
-                "🟢 Connected to the Home LAN";
+            // The initial /connect request already established the connection.
+            // Give the user 3 seconds to see the confirmation, then close.
+            if (closeTimer === null) {
+                closeTimer = setTimeout(() => {
+                    window.close();
 
-            statusElement.className =
-                "connected";
-
+                    // Browsers may refuse window.close() for a normal tab.
+                    // In that case leave a clear final message instead.
+                    setTimeout(() => {
+                        statusElement.textContent =
+                            "🟢 Connected — you can close this page now.";
+                    }, 250);
+                }, 3000);
+            }
         } else {
-
-            statusElement.textContent =
-                "🔴 Connection rejected";
-
-            statusElement.className =
-                "error";
+            connected = false;
+            statusElement.className = "error";
+            statusElement.textContent = "🔴 Connection rejected";
         }
-
     } catch (error) {
-
-        statusElement.textContent =
-            "🔴 Server connection lost";
-
-        statusElement.className =
-            "error";
+        connected = false;
+        statusElement.className = "error";
+        statusElement.textContent = "🔴 Server connection lost";
     }
 }
 
-
 heartbeat();
 
-// Refresh every 60 seconds.
-setInterval(
-    heartbeat,
-    60 * 1000
-);
-
+// Keep the LAN heartbeat alive every minute after the page is open.
+setInterval(heartbeat, 60 * 1000);
 </script>
-
 </body>
 </html>
