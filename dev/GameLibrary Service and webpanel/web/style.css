@@ -4,30 +4,21 @@
     background: #08090c;
     color: #f4f6fb;
 }
-
 * { box-sizing: border-box; }
-
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #182033 0, #08090c 45%); }
 header { height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 0 5vw; border-bottom: 1px solid #252a36; backdrop-filter: blur(20px); }
 .brand { font-weight: 900; letter-spacing: 2px; }
 .brand span { opacity: .45; margin-left: 4px; }
 .status { font-size: 12px; opacity: .7; }
 .status i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #53d769; margin-right: 7px; }
-main { width: min(1400px, 90vw); margin: 0 auto; }
+main { width: min(1400px, 92vw); margin: 0 auto; }
 .hero { padding: 60px 0 35px; }
 .hero h1 { font-size: clamp(36px, 6vw, 72px); margin: 0 0 8px; }
 .hero p { opacity: .6; margin-bottom: 28px; }
-
-.drive-panel {
-    margin: 0 0 28px;
-    padding: 16px;
-    border: 1px solid #252a36;
-    border-radius: 16px;
-    background: rgba(17, 20, 27, .82);
-}
+.drive-panel { margin: 0 0 28px; padding: 16px; border: 1px solid #252a36; border-radius: 16px; background: rgba(17,20,27,.82); }
 .drive-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; font-size: 13px; font-weight: 700; }
 .drive-heading > span:last-child { opacity: .45; font-weight: 500; }
-.drives { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.drives { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap: 12px; }
 .drive-group { min-width: 0; }
 .drive-group + .drive-group { margin-top: 16px; padding-top: 15px; border-top: 1px solid #252a36; }
 .drive-group-title { margin-bottom: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; opacity: .42; }
@@ -42,33 +33,32 @@ main { width: min(1400px, 90vw); margin: 0 auto; }
 .drive-chip-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .drive-chip-info small { opacity: .45; font-size: 10px; white-space: nowrap; }
 .muted { opacity: .4; font-size: 11px; }
-
-#search { width: min(760px, 100%); padding: 17px 20px; border-radius: 14px; border: 1px solid #303646; background: #11141b; color: white; outline: none; font-size: 17px; box-shadow: 0 10px 40px #0005; }
+#search { width: min(760px,100%); padding: 17px 20px; border-radius: 14px; border: 1px solid #303646; background: #11141b; color: white; outline: none; font-size: 17px; box-shadow: 0 10px 40px #0005; }
 #search:focus { border-color: #66789e; }
 label { display: block; margin-top: 14px; opacity: .7; font-size: 13px; }
 #error { display: none; margin-top: 15px; color: #ff8c8c; font-size: 13px; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 18px; padding-bottom: 60px; }
-.card { width: 100%; max-width: 190px; justify-self: center; background: #11141b; border: 1px solid #252a36; border-radius: 14px; overflow: hidden; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
-.card:hover { transform: translateY(-4px); border-color: #56617a; box-shadow: 0 12px 28px #0008; }
+/* Compact profile-sized cards. The full capsule is visible without cropping. */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, 116px); justify-content: start; gap: 16px; padding-bottom: 60px; }
+.card { width: 116px; background: #11141b; border: 1px solid #252a36; border-radius: 11px; overflow: hidden; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.card:hover { transform: translateY(-3px); border-color: #56617a; box-shadow: 0 10px 24px #0008; }
 .art { width: 100%; aspect-ratio: 2 / 3; background: #1a1e27; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.art img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s ease; }
-.card:hover .art img { transform: scale(1.025); }
-.fallback { opacity: .25; font-size: 11px; text-align: center; padding: 20px; }
-.info { padding: 10px 11px 11px; }
-.logo { display: block; width: 100%; max-height: 30px; object-fit: contain; object-position: left center; margin: 0 0 7px; }
-.title { font-weight: 750; font-size: 13px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.drive { margin-top: 5px; font-size: 10px; opacity: .5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.badge { display: inline-block; margin-top: 7px; font-size: 8px; padding: 3px 6px; border-radius: 6px; background: #263229; color: #8ee99a; }
+.art img { width: 100%; height: 100%; object-fit: contain; display: block; transition: transform .2s ease; }
+.card:hover .art img { transform: scale(1.02); }
+.fallback { opacity: .25; font-size: 9px; text-align: center; padding: 12px; }
+.info { padding: 8px 8px 9px; }
+.logo { display: block; width: 100%; max-height: 24px; object-fit: contain; object-position: left center; margin: 0 0 5px; }
+.title { font-weight: 750; font-size: 11px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drive { margin-top: 4px; font-size: 8px; opacity: .5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { display: inline-block; margin-top: 5px; font-size: 7px; padding: 2px 5px; border-radius: 5px; background: #263229; color: #8ee99a; }
 .badge.offline { background: #302a25; color: #e8b57b; }
 .offline-card { opacity: .55; filter: saturate(.45); }
 .empty { grid-column: 1 / -1; padding: 60px 20px; text-align: center; opacity: .4; }
-
 @media (max-width: 650px) {
     header, main { padding-left: 16px; padding-right: 16px; }
     main { width: 100%; }
     .hero { padding-top: 35px; }
-    .grid { grid-template-columns: repeat(auto-fill, minmax(135px, 1fr)); gap: 12px; padding-left: 8px; padding-right: 8px; }
-    .card { max-width: 165px; }
+    .grid { grid-template-columns: repeat(auto-fill, 96px); gap: 10px; padding-left: 6px; padding-right: 6px; }
+    .card { width: 96px; }
     .drive-chip, .hardware-chip { min-width: 0; width: 100%; }
 }
