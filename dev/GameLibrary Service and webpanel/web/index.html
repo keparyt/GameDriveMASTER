@@ -16,10 +16,7 @@
         <h1>Your Games</h1>
         <p>Games available across your GameDrive collection.</p>
         <div class="drive-panel">
-            <div class="drive-heading">
-                <span>Connected drives</span>
-                <span id="drive-count">0</span>
-            </div>
+            <div class="drive-heading"><span>Connected drives</span><span id="drive-count">0</span></div>
             <div id="drives" class="drives"></div>
         </div>
         <input id="search" autofocus autocomplete="off" placeholder="Search games...">
@@ -28,6 +25,33 @@
     </section>
     <section id="grid" class="grid"></section>
 </main>
+
+<div id="game-modal" class="modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-game></div>
+    <article class="game-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+        <button class="close-game" data-close-game aria-label="Close">×</button>
+        <div id="detail-hero" class="detail-hero"></div>
+        <div class="detail-body">
+            <div class="detail-heading">
+                <img id="detail-logo" class="detail-logo" alt="">
+                <h2 id="detail-title">Game</h2>
+                <div id="detail-meta" class="detail-meta"></div>
+            </div>
+            <div class="detail-actions">
+                <button id="launch-game" class="launch-button">▶ Start Game</button>
+                <span id="launch-status" class="launch-status"></span>
+            </div>
+            <section id="trailer-section" class="trailer-section">
+                <h3>Trailer</h3>
+                <video id="detail-trailer" controls playsinline preload="metadata"></video>
+            </section>
+            <section class="description-section">
+                <h3>About</h3>
+                <p id="detail-description">No description available.</p>
+            </section>
+        </div>
+    </article>
+</div>
 <script src="/app.js"></script>
 </body>
 </html>
