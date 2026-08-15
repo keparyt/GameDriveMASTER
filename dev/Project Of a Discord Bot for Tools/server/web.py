@@ -15,10 +15,9 @@ class LANWebServer:
         self.runner = None
         self.site = None
 
-        self.app = web.Application(
-            logger=log,
-            access_log=log,
-        )
+        # aiohttp Application does not accept access_log. Access logging
+        # is configured on AppRunner below.
+        self.app = web.Application()
 
         self.app.router.add_get("/connect/{token}", self.connect)
         self.app.router.add_post("/api/heartbeat/{token}", self.heartbeat)
