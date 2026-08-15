@@ -2,25 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#07090f"><title>KeparGAMELAB</title><link rel="stylesheet" href="/style.css">
+<meta name="theme-color" content="#08090b"><title>KeparGAMELAB</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/theme.css">
 </head>
 <body>
 <div class="aurora aurora-a"></div><div class="aurora aurora-b"></div><div class="grain"></div>
-<header><div class="brand"><span class="brand-mark">K</span><div><b>Kepar</b><span>GAMELAB</span></div></div><div class="header-right"><div class="library-pulse"><i></i> KeparGAMELAB</div><div class="header-time" id="header-time"></div></div></header>
+<header><div class="brand"><span class="brand-mark">K</span><div><b>Kepar</b><span>GAMELAB</span></div></div><div class="header-right"><div class="library-pulse"><i></i> KEPARGAMELAB</div><div class="header-time" id="header-time"></div></div></header>
 <main>
 <section class="hero">
- <div class="eyebrow"><span></span> YOUR PERSONAL GAME COLLECTION</div>
- <h1>Play something<br><em>great.</em></h1>
- <p class="hero-copy">A beautiful, unified view of every game across your connected KeparGameDrives.</p>
- <div class="hero-search"><span>⌕</span><input id="search" autofocus autocomplete="off" placeholder="Search your library..." aria-label="Search games"><kbd>CTRL K</kbd></div>
- <label class="filter"><input id="online" type="checkbox"><span class="switch"></span> Show connected KeparGameDrives only</label>
+ <div class="eyebrow"><span></span> YOUR GAME LIBRARY</div>
+ <h1>Everything you play.<br><em>Beautifully organized.</em></h1>
+ <p class="hero-copy">A refined home for your collection, across every connected KeparGameDrive.</p>
+ <div class="hero-search"><span>⌕</span><input id="search" autofocus autocomplete="off" placeholder="Search your games..." aria-label="Search games"><kbd>CTRL K</kbd></div>
+ <label class="filter"><input id="online" type="checkbox"><span class="switch"></span> Connected KeparGameDrives only</label>
  <div id="error"></div>
 </section>
 <section class="drive-panel">
  <div class="section-top"><div><div class="section-kicker">KEPARGAMEDRIVES</div><h2>Connected storage</h2></div><div class="drive-count" id="drive-count">0 connected</div></div>
  <div id="drives" class="drives"></div>
 </section>
-<section class="library-section"><div class="section-top library-top"><div><div class="section-kicker">COLLECTION</div><h2>Your Games</h2></div><div class="library-line"></div></div><section id="grid" class="grid"></section></section>
+<section class="library-section"><div class="section-top library-top"><div><div class="section-kicker">LIBRARY</div><h2>Your Games</h2></div><div class="library-line"></div></div><section id="grid" class="grid"></section></section>
 </main>
 <div id="game-modal" class="modal" aria-hidden="true"><div class="modal-backdrop" data-close-game></div><article class="game-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="close-game" data-close-game aria-label="Close">×</button><div id="detail-hero" class="detail-hero"><div class="hero-vignette"></div></div><div class="detail-body"><div class="detail-heading"><img id="detail-logo" class="detail-logo" alt=""><h2 id="detail-title">Game</h2><div id="detail-meta" class="detail-meta"></div></div><div class="detail-actions"><button id="launch-game" class="launch-button"><span>▶</span> START GAME</button><span id="launch-status" class="launch-status"></span></div><section id="trailer-section" class="trailer-section"><div class="detail-kicker">TRAILER</div><video id="detail-trailer" controls playsinline preload="metadata"></video></section><section class="description-section"><div class="detail-kicker">ABOUT THE GAME</div><p id="detail-description">No description available.</p></section></div></article></div>
 <div id="drive-notification" class="drive-notification"></div>
