@@ -120,7 +120,7 @@ def create_app(db,metadata=None,config=None,playnite=None):
             apps=scan_apps()
             if q: apps=[a for a in apps if _norm(q) in _norm(a["name"])]
             for a in apps:
-                for k in ("cover","capsule","icon","logo"):
+                for k in ("cover","capsule","hero","icon","logo"):
                     if a.get(k):a[k]=app_media_url(a["app_id"],k,a[k])
             return sorted(apps,key=lambda x:str(x.get("title") or x.get("name") or "").lower())
         for g in gd:
@@ -144,7 +144,10 @@ def create_app(db,metadata=None,config=None,playnite=None):
         return sorted(out,key=lambda x:str(x.get("title") or x.get("name") or "").lower())
     def find(uid):
         app_item=next((x for x in scan_apps() if x["unified_id"].casefold()==str(uid).casefold()),None)
-        if app_item:return app_item
+        if app_item:
+            for k in ("cover","capsule","hero","icon","logo"):
+                if app_item.get(k):app_item[k]=app_media_url(app_item["app_id"],k,app_item[k])
+            return app_item
         return next((x for x in library() if x["unified_id"]==uid),None)
     @app.get("/",response_class=HTMLResponse)
     def index():return (WEB_DIR/"index.html").read_text(encoding="utf-8")
@@ -157,16 +160,12 @@ def create_app(db,metadata=None,config=None,playnite=None):
         if kind not in ("cover","capsule","hero","icon","logo"):return {"error":"not_found"}
         a=find_app(app_id)
         if not a:return {"error":"not_found"}
-        if kind in ("cover","capsule"):
-            value=a.get("cover")
-        elif kind=="hero":
-            value=a.get("hero")
-        else:
-            value=a.get("icon")
+        if kind in ("cover","capsule"):value=a.get("cover")
+        elif kind=="hero":value=a.get("hero")
+        else:value=a.get("icon")
         if not value:return {"error":"not_found"}
         path=_media_file_path(value,[Path(a["install_directory"]).parent,Path(a["install_directory"]),BASE_DIR/"apps"])
-        if path:
-            return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
+        if path:return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
         return {"error":"not_found"}
     @app.get("/api/playnite/media/{playnite_id}/{kind}")
     def p_media(playnite_id:str,kind:str):
