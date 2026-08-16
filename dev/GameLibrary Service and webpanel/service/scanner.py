@@ -151,7 +151,7 @@ class Scanner:
         )
         games_root = root / self.config["game_folder"]
         if not games_root.is_dir():
-            log.warning("Game folder unavailable on %s; keeping existing indexed games", drive)
+            log.debug("Game folder unavailable on %s; keeping existing indexed games", drive)
             return True
 
         seen_paths = set()
@@ -163,20 +163,27 @@ class Scanner:
                 seen_paths.add(relative_path)
                 self.db.upsert_game(drive_id_value, item.name.strip(), relative_path)
         except OSError as exc:
-            log.warning("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
+            log.debug("Cannot fully scan %s; keeping existing games: %s", games_root, exc)
             return True
 
         log.debug("Scan indexed %d game folders on %s; existing library entries preserved", len(seen_paths), drive)
         return True
 
     def scan(self):
-        self.db.mark_disconnected()
+        # Do not mark every drive offline at the start of a refresh. Each
+        # successful scan_drive() marks its partition online. Only after the
+        # complete scan do we mark partitions that were not found offline.
         found = 0
+        connected_ids = set()
         for drive in drive_letters():
             try:
                 if self.scan_drive(drive):
                     found += 1
+                    uid = drive_id(drive)
+                    if uid:
+                        connected_ids.add(uid)
             except Exception:
                 log.exception("Error scanning %s", drive)
+        self.db.mark_unseen_disconnected(connected_ids)
         log.info("Scan finished: %d GameDrive partition(s) online", found)
         return found
