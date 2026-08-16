@@ -1,35 +1,25 @@
-﻿
-updateDevicesPanelVisibilit
-updateDevicesPanelVisibility();y();const grid=document.querySelector("#grid"),search=document.querySelector("#search"),online=document.querySelector("#online"),errorBox=document.querySelector("#error"),drivesBox=document.querySelector("#drives"),driveCount=document.querySelector("#drive-count"),modal=document.querySelector("#game-modal"),detailHero=document.querySelector("#detail-hero"),detailLogo=document.querySelector("#detail-logo"),detailTitle=document.querySelector("#detail-title"),detailMeta=document.querySelector("#detail-meta"),detailSource=document.querySelector("#detail-source"),detailDescription=document.querySelector("#detail-description"),detailTrailer=document.querySelector("#detail-trailer"),trailerSection=document.querySelector("#trailer-section"),launchButton=document.querySelector("#launch-game"),launchStatus=document.querySelector("#launch-status"),headerTime=document.querySelector("#header-time"),libraryTitle=document.querySelector("#library-title"),libraryKicker=document.querySelector("#library-kicker");
+﻿const grid=document.querySelector("#grid"),search=document.querySelector("#search"),online=document.querySelector("#online"),errorBox=document.querySelector("#error"),drivesBox=document.querySelector("#drives"),driveCount=document.querySelector("#drive-count"),modal=document.querySelector("#game-modal"),detailHero=document.querySelector("#detail-hero"),detailLogo=document.querySelector("#detail-logo"),detailTitle=document.querySelector("#detail-title"),detailMeta=document.querySelector("#detail-meta"),detailSource=document.querySelector("#detail-source"),detailDescription=document.querySelector("#detail-description"),detailTrailer=document.querySelector("#detail-trailer"),trailerSection=document.querySelector("#trailer-section"),launchButton=document.querySelector("#launch-game"),launchStatus=document.querySelector("#launch-status"),headerTime=document.querySelector("#header-time"),libraryTitle=document.querySelector("#library-title"),libraryKicker=document.querySelector("#library-kicker");
 let selectedGameId=null,previousDriveState=null,drivePollTimer=null,artworkPollTimer=null,currentGamesSignature=null,currentDrivesSignature=null,gamesRequest=0,drivesRequest=0,artworkRequest=0,gamesBusy=false,drivesBusy=false,currentView="drives";
 const escapeHtml=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const showError=m=>{errorBox.textContent=m;errorBox.style.display="block"},hideError=()=>{errorBox.textContent="";errorBox.style.display="none"};
 function formatBytes(bytes){let n=Number(bytes||0),u=["B","GB","TB","PB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n?`${n>=10||i===0?Math.round(n):n.toFixed(1)} ${u[i]}`:"â€”"}
 function driveState(ds){return ds.map(d=>`${d.uuid||d.id}:${Boolean(d.connected)}`).sort().join("|")}
 
+function updateDevicesPanelVisibility() {
+    const panel =
+        document.querySelector("#devices-panel") ||
+        document.querySelector("#drives-box") ||
+        document.querySelector("#drives");
 
+    if (!panel) return;
+
+    panel.hidden = currentView !== "drives";
+}
 function gameQuery(){return new URLSearchParams({q:search.value.trim(),connected_only:currentView==="apps"?false:online.checked,mode:currentView})}
 function gameSignature(ds){return JSON.stringify(ds.map(g=>({id:g.unified_id||g.id,title:g.title,name:g.name,connected:Boolean(g.connected),drive_name:g.drive_name,last_letter:g.last_letter,cover:g.cover,capsule:g.capsule,logo:g.logo,source:g.source,category:g.category,playnite_id:g.playnite_id,playnite_managed:g.playnite_managed,installation_state:g.installation_state})).sort((a,b)=>String(a.id).localeCompare(String(b.id))))}
 function driveSignature(ds,hw){return JSON.stringify({ds:ds.map(d=>({id:d.uuid||d.id,name:d.name,connected:Boolean(d.connected),last_letter:d.last_letter,description:d.description})),hw:hw.map(d=>({id:d.id||d.name,name:d.name,serial:d.serial,status:d.status,offline:d.offline,bus:d.bus,size:d.size,health:d.health,partitions:d.partitions}))})}
 function showDriveNotification(name,connected){const toast=document.querySelector("#drive-notification");toast.className=`drive-notification ${connected?"is-connected":"is-disconnected"}`;toast.innerHTML=`<span class="drive-notification-icon">${connected?"âœ“":"!"}</span><span><strong>${escapeHtml(name||"GameDrive")}</strong><small>${connected?"Drive connected":"Drive disconnected"}</small></span>`;requestAnimationFrame(()=>toast.classList.add("show"));clearTimeout(toast._hideTimer);toast._hideTimer=setTimeout(()=>toast.classList.remove("show"),4500)}
 function createDriveCard(d){const c=Boolean(d.connected),letter=d.last_letter?`${d.last_letter}:`:"â€”";return `<div class="drive-chip ${c?"connected":"disconnected"}" title="${escapeHtml(d.description||"")}"><span class="drive-dot"></span><div class="drive-chip-info"><strong>${escapeHtml(d.name||"Unnamed GameDrive")}</strong><small>${escapeHtml(letter)} Â· ${c?"GameDrive loaded":"Offline"}</small><small>${escapeHtml(d.description||"")}</small></div></div>`}
-function updateDevicesPanelVisibility() {
-
-    const panel =
-        document.querySelector("#devices-panel") ||
-        document.querySelector("#drives-box");
-
-    if (!panel) {
-        return;
-    }
-
-    // Only show the hardware/device list on the Drives page.
-    const drivesView =
-        currentView === "drives" ||
-        currentView === "drive";
-
-    panel.hidden = !drivesView;
-}
 function createPartitionRow(p) {
     const loaded = Boolean(p.gamedrive_loaded);
 
@@ -48,27 +38,6 @@ function createPartitionRow(p) {
     `;
 }
 
-function formatDriveCapacity(value) {
-    const bytes = Number(value);
-
-    if (!Number.isFinite(bytes) || bytes <= 0) {
-        return "Unknown size";
-    }
-
-    const units = ["B", "KB", "MB", "GB", "TB"];
-
-    let size = bytes;
-    let unit = 0;
-
-    while (size >= 1024 && unit < units.length - 1) {
-        size /= 1024;
-        unit++;
-    }
-
-    const decimals = unit >= 3 ? 1 : 0;
-
-    return `${size.toFixed(decimals)} ${units[unit]}`;
-}
 function createHardwareCard(d) {
     const connected =
         !d.offline &&
@@ -120,13 +89,11 @@ function createCard(g,i){const connected=Boolean(g.connected),cover=g.cover||g.c
 function patchGames(ds){const sig=gameSignature(ds);if(sig===currentGamesSignature)return false;currentGamesSignature=sig;const fragment=document.createDocumentFragment();if(ds.length){const holder=document.createElement("div");holder.innerHTML=ds.map(createCard).join("");while(holder.firstElementChild)fragment.appendChild(holder.firstElementChild)}else{const empty=document.createElement("div");empty.className="empty";empty.textContent=currentView==="drives"?"No games found on GameDrives.":currentView==="apps"?"No apps found in the apps folder.":"No installed games found.";fragment.appendChild(empty)}grid.replaceChildren(fragment);return true}
 async function loadGames({initial=false}={}){if(gamesBusy)return;gamesBusy=true;const request=++gamesRequest;try{const r=await fetch(`/api/games?${gameQuery()}`,{cache:"no-store"});if(request!==gamesRequest||!r.ok)return;patchGames(await r.json())}catch(e){if(initial)throw e;console.debug("Game refresh failed",e)}finally{gamesBusy=false}}
 async function refreshArtwork(){if(currentView==="apps")return;const request=++artworkRequest;try{const r=await fetch(`/api/games?${gameQuery()}`,{cache:"no-store"});if(request!==artworkRequest||!r.ok)return;const games=await r.json();patchGames(games);for(const g of games){const key=g.unified_id||`gd:${g.id}`,card=grid.querySelector(`.card[data-game-id="${CSS.escape(String(key))}"]`);if(!card)continue;const art=card.querySelector(".art"),cover=g.cover||g.capsule;if(cover){const existing=art.querySelector("img");if(!existing||existing.getAttribute("src")!==cover){const img=new Image();img.src=cover;img.alt=g.title||g.name||"Game artwork";img.loading="lazy";img.onload=()=>{if(grid.querySelector(`.card[data-game-id="${CSS.escape(String(key))}"]`)===card)art.replaceChildren(img)}}}}if(selectedGameId){const g=games.find(x=>String(x.unified_id||`gd:${x.id}`)===String(selectedGameId));if(g){const hero=g.hero||g.capsule||g.cover;if(hero)detailHero.style.backgroundImage=`url("${String(hero).replace(/"/g,'\\"')}")`;if(g.logo){detailLogo.src=g.logo;detailLogo.style.display="block"}}}}catch(e){console.debug("Artwork refresh failed",e)}}
-async function openGame(id){selectedGameId=id;modal.classList.add("open");modal.setAttribute("aria-hidden","false");document.body.classList.add("modal-open");detailTitle.textContent="Loadingâ€¦";detailLogo.style.display="none";detailHero.style.backgroundImage="none";detailDescription.textContent="Loading detailsâ€¦";detailMeta.textContent="";detailSource.textContent="";trailerSection.style.display="none";detailTrailer.pause();detailTrailer.removeAttribute("src");launchButton.disabled=true;launchStatus.textContent="";try{const r=await fetch(`/api/games/${encodeURIComponent(id)}/details`,{cache:"no-store"});if(!r.ok)throw Error("Unable to load details");const g=await r.json();detailTitle.textContent=g.title||g.name||"Unknown";if(g.logo){detailLogo.src=g.logo;detailLogo.style.display="block"}const hero=g.hero||g.capsule||g.cover;if(hero)detailHero.style.backgroundImage=`url("${String(hero).replace(/"/g,'\\"')}")`;detailMeta.textContent=[g.category==="Apps"?"App":g.installation_state||"Installed",g.drive_name,g.last_letter?`${g.last_letter}:`:null].filter(Boolean).join(" Â· ");detailSource.textContent=g.source==="apps"?"Source: GameDrive Apps Â· Local application":g.playnite_managed&&g.connected?"Source: Playnite + GameDrive Â· Playnite manages launch and tracking":g.playnite_managed?"Source: Playnite Â· Playnite manages launch and tracking":g.source==="playnite"?"Source: Playnite Â· Playnite manages launch and tracking":"Source: GameDriveMASTER";detailDescription.innerHTML=g.description||"No description available.";if(g.trailer){detailTrailer.src=g.trailer;trailerSection.style.display="block"}launchButton.disabled=false;launchStatus.className="launch-status";launchStatus.textContent=g.source==="apps"?"App ready to open":g.playnite_managed||g.source==="playnite"?"Playnite managed Â· Ready":"Connected Â· Ready to start"}catch(e){console.error(e);detailTitle.textContent="Unable to load";detailDescription.textContent=e.message;launchButton.disabled=true}}
+async function openGame(id){selectedGameId=id;modal.classList.add("open");modal.setAttribute("aria-hidden","false");document.body.classList.add("modal-open");detailTitle.textContent="Loadingâ€¦";detailLogo.style.display="none";detailHero.style.backgroundImage="none";detailDescription.textContent="Loading detailsâ€¦";detailMeta.textContent="";detailSource.textContent="";trailerSection.style.display="none";detailTrailer.pause();detailTrailer.removeAttribute("src");launchButton.disabled=true;launchStatus.textContent="";try{const r=await fetch(`/api/games/${encodeURIComponent(id)}/details`,{cache:"no-store"});if(!r.ok)throw Error("Unable to load details");const g=await r.json();detailTitle.textContent=g.title||g.name||"Unknown";if(g.logo){detailLogo.src=g.logo;detailLogo.style.display="block"}const hero=g.hero||g.capsule||g.cover;if(hero)detailHero.style.backgroundImage=`url("${String(hero).replace(/"/g,'\\"')}")`;detailMeta.textContent=[g.category==="Apps"?"App":g.installation_state||"Installed",g.drive_name,g.last_letter?`${g.last_letter}:`:null].filter(Boolean).join(" Â· ");detailSource.textContent=g.source==="apps"?"Source: GameDrive Apps Â· Local application":g.playnite_managed&&g.connected?"Source: Playnite + GameDrive Â· Playnite manages launch and tracking":g.playnite_managed?"Source: Playnite Â· Playnite manages launch and tracking":g.source==="playnite"?"Source: Playnite Â· Playnite manages launch and tracking":"Source: GameDriveMASTER";detailDescription.innerHTML=g.description||"No description available.";if(g.trailer){detailTrailer.src=g.trailer;trailerSection.style.display="block"}launchButton.disabled=false;launchStatus.className="launch-status";launchStatus.textContent=g.source==="apps"?"App ready to open":g.playnite_managed||g.source==="playnite"?"Playnite managed Â· Ready":"Connected · Ready to start"}catch(e){console.error(e);detailTitle.textContent="Unable to load";detailDescription.textContent=e.message;launchButton.disabled=true}}
 function closeGame(){modal.classList.remove("open");modal.setAttribute("aria-hidden","true");document.body.classList.remove("modal-open");detailTrailer.pause();detailTrailer.removeAttribute("src");selectedGameId=null}
 grid.addEventListener("click",e=>{const card=e.target.closest(".card");if(card)openGame(card.dataset.gameId)});grid.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.closest(".card")){e.preventDefault();openGame(e.target.closest(".card").dataset.gameId)}});document.querySelectorAll("[data-close-game]").forEach(x=>x.addEventListener("click",closeGame));document.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal.classList.contains("open"))closeGame();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();search.focus();search.select()}});
-launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;launchButton.disabled=true;launchStatus.textContent=currentView==="apps"?"Opening appâ€¦":"Starting through Playniteâ€¦";try{const r=await fetch(`/api/games/${encodeURIComponent(selectedGameId)}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||`HTTP ${r.status}`);launchStatus.textContent=d.playnite_id?"Playnite launched Â· tracking active":currentView==="apps"?"App opened":"Game started"}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`}finally{setTimeout(()=>{if(selectedGameId)launchButton.disabled=false},500)}});
-function setLibraryView(view){currentView=view;
-updateDevicesPanelVisibility();document.querySelectorAll("[data-library-view]").forEach(b=>b.classList.toggle("active",b.dataset.libraryView===view));if(view==="drives"){libraryKicker.textContent="DRIVES";libraryTitle.textContent="Games on GameDrives";online.parentElement.style.display=""}else if(view==="apps"){libraryKicker.textContent="APPS";libraryTitle.textContent="GameDrive Apps";online.parentElement.style.display="none"}else{libraryKicker.textContent="FULL PLAYLIST";libraryTitle.textContent="All installed games";online.parentElement.style.display=""}currentGamesSignature=null;loadGames()}
+launchButton.addEventListener("click",async()=>{if(!selectedGameId)return;launchButton.disabled=true;launchStatus.textContent=currentView==="apps"?"Opening app…":"Starting through Playnite…";try{const r=await fetch(`/api/games/${encodeURIComponent(selectedGameId)}/launch`,{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||`HTTP ${r.status}`);launchStatus.textContent=d.playnite_id?"Playnite launched · tracking active":currentView==="apps"?"App opened":"Game started"}catch(e){launchStatus.textContent=`Unable to start: ${e.message}`}finally{setTimeout(()=>{if(selectedGameId)launchButton.disabled=false},500)}});
+function setLibraryView(view){currentView=view;updateDevicesPanelVisibility();document.querySelectorAll("[data-library-view]").forEach(b=>b.classList.toggle("active",b.dataset.libraryView===view));if(view==="drives"){libraryKicker.textContent="DRIVES";libraryTitle.textContent="Games on GameDrives";online.parentElement.style.display=""}else if(view==="apps"){libraryKicker.textContent="APPS";libraryTitle.textContent="GameDrive Apps";online.parentElement.style.display="none"}else{libraryKicker.textContent="FULL PLAYLIST";libraryTitle.textContent="All installed games";online.parentElement.style.display=""}currentGamesSignature=null;loadGames()}
 document.querySelectorAll("[data-library-view]").forEach(b=>b.addEventListener("click",()=>setLibraryView(b.dataset.libraryView)));
 setInterval(()=>{headerTime.textContent=new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit"}).format(new Date())},1000);let searchTimer=null;search.addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{currentGamesSignature=null;loadGames()},180)});online.addEventListener("change",()=>{currentGamesSignature=null;loadGames()});
 async function load(){hideError();try{await Promise.all([loadDrives({initial:true}),loadGames({initial:true})]);clearInterval(drivePollTimer);drivePollTimer=setInterval(()=>loadDrives(),5000);clearInterval(artworkPollTimer);artworkPollTimer=setInterval(refreshArtwork,3000)}catch(e){console.error(e);showError("Unable to load the complete Game Library.")}}load();
-
