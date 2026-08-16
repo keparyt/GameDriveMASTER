@@ -135,9 +135,10 @@ def create_app(db,metadata=None,config=None,playnite=None):
             out=[a for a in scan_apps() if not q or _norm(q) in _norm(a["name"])]
         return sorted(out,key=lambda x:str(x.get("title") or x.get("name") or "").lower())
     def find(uid):
-        item=next((x for x in library() if x["unified_id"]==uid),None)
-        if item:return item
-        return next((x for x in scan_apps() if x["unified_id"]==uid),None)
+        # Apps have their own category, so resolve app:<name> directly.
+        app_item=next((x for x in scan_apps() if x["unified_id"]==uid),None)
+        if app_item:return app_item
+        return next((x for x in library() if x["unified_id"]==uid),None)
     @app.get("/",response_class=HTMLResponse)
     def index():return (WEB_DIR/"index.html").read_text(encoding="utf-8")
     for route,file,ctype in [("/style.css","style.css","text/css"),("/theme.css","theme.css","text/css"),("/network.css","network.css","text/css"),("/app.js","app.js","application/javascript"),("/network.js","network.js","application/javascript")]:app.add_api_route(route,lambda f=file,c=ctype:FileResponse(WEB_DIR/f,media_type=c),methods=["GET"])
@@ -220,8 +221,9 @@ def create_app(db,metadata=None,config=None,playnite=None):
             app=find_app(x.get("app_id"))
             if not app:return {"ok":False,"error":"app_not_found"}
             try:
-                subprocess.Popen([app["executable"]],cwd=app["working_directory"],creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-                return {"ok":True,"path":app["executable"]}
+                command=[app["executable"]]+list(app.get("arguments") or [])
+                subprocess.Popen(command,cwd=app["working_directory"],creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+                return {"ok":True,"path":app["executable"],"arguments":app.get("arguments") or []}
             except Exception as e:return {"ok":False,"error":"app_launch_failed","detail":str(e)}
         if x.get("playnite_id"):return playnite.launch(x["playnite_id"])
         if not x.get("connected") or not x.get("last_letter"):return {"ok":False,"error":"drive_offline"}
