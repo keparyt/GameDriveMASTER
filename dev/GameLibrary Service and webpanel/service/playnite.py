@@ -68,12 +68,6 @@ class PlayniteBridge:
         return None
 
     def _normalize_api_json(self, value):
-        """Normalize DataContractJsonSerializer's Dictionary<string,object> output.
-
-        The Playnite plugin currently serializes dictionaries as arrays of
-        {"Key": ..., "Value": ...}. Convert those back to normal JSON objects
-        before the rest of the bridge consumes the response.
-        """
         if isinstance(value, list):
             normalized = [self._normalize_api_json(item) for item in value]
             if normalized and all(
@@ -102,7 +96,7 @@ class PlayniteBridge:
             if available:
                 log.info("GameDrive Playnite API ready: %s installed game(s)", response.get("installedCount", "unknown"))
             return available
-        except Exception as exc:
+        except Exception:
             with self._lock:
                 self._api_available = False
                 self._api_checked_at = time.monotonic()
@@ -131,8 +125,7 @@ class PlayniteBridge:
         request = Request(self.API_URL + path, headers={"Accept": "application/json", "User-Agent": "GameDriveMASTER/1.0"})
         with urlopen(request, timeout=self.API_REQUEST_TIMEOUT if timeout is None else timeout) as response:
             raw = response.read()
-        data = json.loads(raw.decode("utf-8"))
-        data = self._normalize_api_json(data)
+        data = self._normalize_api_json(json.loads(raw.decode("utf-8")))
         if isinstance(data, dict) and data.get("ok") is False:
             raise RuntimeError(data.get("error") or "Playnite API request failed")
         return data
@@ -251,7 +244,7 @@ class PlayniteBridge:
             self._last_refresh = time.time()
             self._last_error = None
         log.info("Playnite API library read: %d installed game(s)", len(games))
-        return list(games)
+        return games
 
     def _background_refresh(self):
         if not self.enabled or not self._refresh_lock.acquire(blocking=False):
@@ -262,12 +255,13 @@ class PlayniteBridge:
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
+            log.warning("Playnite library refresh failed: %s", exc)
             self._probe_api(timeout=0.5)
         finally:
             self._refresh_lock.release()
 
     def read_games(self, force=False):
-        """Return cached games immediately; refresh stale Playnite data in background."""
+        """Return cached games, synchronously filling an empty cache once."""
         now = time.time()
         with self._lock:
             cached = list(self._games)
@@ -275,6 +269,14 @@ class PlayniteBridge:
             api_available = self._api_available
         if not self.enabled:
             return cached
+        if not cached and api_available:
+            try:
+                return self._fetch_games()
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = str(exc)
+                log.warning("Initial Playnite library read failed: %s", exc)
+                return cached
         if force or age >= self.API_CACHE_SECONDS or not api_available:
             threading.Thread(target=self._background_refresh, daemon=True, name="PlayniteLibraryRefresh").start()
         return cached
