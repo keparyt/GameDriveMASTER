@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
@@ -69,12 +70,10 @@ public class GameDriveLibrary : LibraryPlugin
         {
             string iniPath = Path.Combine(drive.RootDirectory.FullName, "GameDrive.ini");
             if (!File.Exists(iniPath)) continue;
-
             IniData ini;
             try { ini = new FileIniDataParser().ReadFile(iniPath); }
             catch (Exception ex) { logger.Error(ex, $"GameDrive: failed to parse {iniPath}"); continue; }
             if (!ini.Sections.ContainsSection("Directories")) continue;
-
             foreach (var key in ini["Directories"])
             {
                 string folder = Path.Combine(drive.RootDirectory.FullName, key.Value);
@@ -85,8 +84,7 @@ public class GameDriveLibrary : LibraryPlugin
                     string exeTxt = Path.Combine(gameFolder, "exepath.txt");
                     if (!File.Exists(exeTxt)) continue;
                     string relativeExe;
-                    try { relativeExe = File.ReadAllText(exeTxt).Trim(); }
-                    catch { continue; }
+                    try { relativeExe = File.ReadAllText(exeTxt).Trim(); } catch { continue; }
                     string exe = Path.Combine(gameFolder, "Game", relativeExe);
                     if (!File.Exists(exe)) continue;
                     games.Add(new GameMetadata
@@ -117,8 +115,8 @@ public class GameDriveLibrary : LibraryPlugin
         }
         catch (Exception ex)
         {
-            logger.Error(ex, $"GameDrive: failed to start Playnite library API on port {LibraryApiPort}.");
             libraryServer = null;
+            logger.Error(ex, "GameDrive: failed to start Playnite library API.");
         }
     }
 
@@ -136,16 +134,13 @@ public class GameDriveLibrary : LibraryPlugin
             try
             {
                 TcpClient client = libraryServer.AcceptTcpClient();
-                ThreadPool.QueueUserWorkItem(_ => HandleLibraryRequest(client));
+                ThreadPool.QueueUserWorkItem(_ => HandleClient(client));
             }
-            catch
-            {
-                break;
-            }
+            catch { break; }
         }
     }
 
-    private void HandleLibraryRequest(TcpClient client)
+    private void HandleClient(TcpClient client)
     {
         using (client)
         using (NetworkStream stream = client.GetStream())
@@ -154,106 +149,115 @@ public class GameDriveLibrary : LibraryPlugin
             {
                 stream.ReadTimeout = 3000;
                 stream.WriteTimeout = 3000;
-
-                byte[] buffer = new byte[8192];
-                int count = stream.Read(buffer, 0, buffer.Length);
-                if (count <= 0) return;
-
-                string request = Encoding.ASCII.GetString(buffer, 0, count);
+                string request = ReadHttpRequest(stream);
+                if (string.IsNullOrEmpty(request)) return;
                 string firstLine = request.Split(new[] { "\r\n" }, StringSplitOptions.None)[0];
                 string[] parts = firstLine.Split(' ');
-                if (parts.Length < 2)
-                {
-                    WriteHttpJson(stream, 400, new Dictionary<string, object> { ["ok"] = false, ["error"] = "bad_request" });
-                    return;
-                }
-
-                string path;
-                try { path = Uri.UnescapeDataString(new Uri("http://127.0.0.1" + parts[1]).AbsolutePath).TrimEnd('/').ToLowerInvariant(); }
-                catch { path = parts[1].ToLowerInvariant(); }
-
-                if (path == "/health")
-                {
-                    int total = 0, installed = 0;
-                    bool open = false;
-                    try
-                    {
-                        open = api.Database.IsOpen;
-                        if (open)
-                        {
-                            total = api.Database.Games.Count;
-                            installed = api.Database.Games.Count(g => g != null && g.IsInstalled);
-                        }
-                    }
-                    catch { open = false; }
-
-                    libraryReady = open;
-                    WriteHttpJson(stream, 200, new Dictionary<string, object>
-                    {
-                        ["ok"] = true,
-                        ["ready"] = open,
-                        ["source"] = "PlayniteApi.Database.Games",
-                        ["gameCount"] = total,
-                        ["installedCount"] = installed
-                    });
-                    return;
-                }
-
-                if (path == "/games")
-                {
-                    if (!api.Database.IsOpen)
-                    {
-                        WriteHttpJson(stream, 503, new Dictionary<string, object> { ["ok"] = false, ["error"] = "playnite_database_not_ready" });
-                        return;
-                    }
-
-                    var result = api.Database.Games
-                        .Where(g => g != null && g.IsInstalled)
-                        .Select(ToApiGame)
-                        .ToList();
-                    WriteHttpJson(stream, 200, result);
-                    return;
-                }
-
-                const string launchPrefix = "/games/";
-                const string launchSuffix = "/launch";
-                if (path.StartsWith(launchPrefix) && path.EndsWith(launchSuffix))
-                {
-                    string idText = path.Substring(launchPrefix.Length, path.Length - launchPrefix.Length - launchSuffix.Length);
-                    Guid id;
-                    if (!Guid.TryParse(idText, out id))
-                    {
-                        WriteHttpJson(stream, 400, new Dictionary<string, object> { ["ok"] = false, ["error"] = "invalid_playnite_id" });
-                        return;
-                    }
-
-                    var game = api.Database.Games.FirstOrDefault(g => g != null && g.Id == id && g.IsInstalled);
-                    if (game == null)
-                    {
-                        WriteHttpJson(stream, 404, new Dictionary<string, object> { ["ok"] = false, ["error"] = "game_not_found" });
-                        return;
-                    }
-
-                    try
-                    {
-                        api.StartGame(game.Id);
-                        WriteHttpJson(stream, 200, new Dictionary<string, object> { ["ok"] = true, ["playniteId"] = game.Id.ToString() });
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.Error(ex, $"GameDrive: failed to launch Playnite game {game.Id}");
-                        WriteHttpJson(stream, 500, new Dictionary<string, object> { ["ok"] = false, ["error"] = "launch_failed", ["detail"] = ex.Message });
-                    }
-                    return;
-                }
-
-                WriteHttpJson(stream, 404, new Dictionary<string, object> { ["ok"] = false, ["error"] = "not_found" });
+                string path = parts.Length >= 2 ? parts[1].Split('?')[0].TrimEnd('/').ToLowerInvariant() : "";
+                HandleApiRequest(stream, path);
             }
             catch (Exception ex)
             {
-                logger.Warn($"GameDrive: API request failed: {ex.Message}");
-                try { WriteHttpJson(stream, 500, new Dictionary<string, object> { ["ok"] = false, ["error"] = "internal_error" }); } catch { }
+                logger.Warn($"GameDrive: API client failed: {ex.Message}");
             }
+        }
+    }
+
+    private string ReadHttpRequest(NetworkStream stream)
+    {
+        var buffer = new byte[4096];
+        using (var ms = new MemoryStream())
+        {
+            while (ms.Length < 32768)
+            {
+                int read = stream.Read(buffer, 0, buffer.Length);
+                if (read <= 0) break;
+                ms.Write(buffer, 0, read);
+                string text = Encoding.ASCII.GetString(ms.ToArray());
+                if (text.IndexOf("\r\n\r\n", StringComparison.Ordinal) >= 0) return text;
+            }
+            return Encoding.ASCII.GetString(ms.ToArray());
+        }
+    }
+
+    private void HandleApiRequest(NetworkStream stream, string path)
+    {
+        try
+        {
+            if (path == "/health")
+            {
+                int total = 0, installed = 0;
+                bool open = false;
+                try
+                {
+                    open = api.Database.IsOpen;
+                    if (open)
+                    {
+                        total = api.Database.Games.Count;
+                        installed = api.Database.Games.Count(g => g != null && g.IsInstalled);
+                    }
+                }
+                catch { open = false; }
+                libraryReady = open;
+                WriteJson(stream, new Dictionary<string, object>
+                {
+                    ["ok"] = true,
+                    ["ready"] = open,
+                    ["source"] = "PlayniteApi.Database.Games",
+                    ["gameCount"] = total,
+                    ["installedCount"] = installed
+                }, 200);
+                return;
+            }
+
+            if (path == "/games")
+            {
+                if (!api.Database.IsOpen)
+                {
+                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "playnite_database_not_ready" }, 503);
+                    return;
+                }
+                var result = api.Database.Games.Where(g => g != null && g.IsInstalled).Select(ToApiGame).ToList();
+                WriteJson(stream, result, 200);
+                return;
+            }
+
+            const string launchPrefix = "/games/";
+            const string launchSuffix = "/launch";
+            if (path.StartsWith(launchPrefix) && path.EndsWith(launchSuffix))
+            {
+                string idText = path.Substring(launchPrefix.Length, path.Length - launchPrefix.Length - launchSuffix.Length);
+                Guid id;
+                if (!Guid.TryParse(idText, out id))
+                {
+                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "invalid_playnite_id" }, 400);
+                    return;
+                }
+                var game = api.Database.Games.FirstOrDefault(g => g != null && g.Id == id && g.IsInstalled);
+                if (game == null)
+                {
+                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "game_not_found" }, 404);
+                    return;
+                }
+                try
+                {
+                    api.StartGame(game.Id);
+                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = true, ["playniteId"] = game.Id.ToString() }, 200);
+                }
+                catch (Exception ex)
+                {
+                    logger.Error(ex, $"GameDrive: failed to launch Playnite game {game.Id}");
+                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "launch_failed", ["detail"] = ex.Message }, 500);
+                }
+                return;
+            }
+
+            WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "not_found" }, 404);
+        }
+        catch (Exception ex)
+        {
+            logger.Warn($"GameDrive: API request failed: {ex.Message}");
+            try { WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "internal_error" }, 500); } catch { }
         }
     }
 
@@ -280,7 +284,7 @@ public class GameDriveLibrary : LibraryPlugin
         };
     }
 
-    private void WriteHttpJson(NetworkStream stream, int statusCode, object value)
+    private void WriteJson(NetworkStream stream, object value, int statusCode)
     {
         string json;
         var serializer = new DataContractJsonSerializer(value.GetType());
@@ -289,12 +293,15 @@ public class GameDriveLibrary : LibraryPlugin
             serializer.WriteObject(ms, value);
             json = Encoding.UTF8.GetString(ms.ToArray());
         }
-
         byte[] body = Encoding.UTF8.GetBytes(json);
-        string statusText = statusCode == 200 ? "OK" : statusCode == 400 ? "Bad Request" : statusCode == 404 ? "Not Found" : statusCode == 409 ? "Conflict" : statusCode == 500 ? "Internal Server Error" : "Service Unavailable";
-        string headers = $"HTTP/1.1 {statusCode} {statusText}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n";
-        byte[] headerBytes = Encoding.ASCII.GetBytes(headers);
-        stream.Write(headerBytes, 0, headerBytes.Length);
+        string status = statusCode == 200 ? "OK" : statusCode == 400 ? "Bad Request" : statusCode == 404 ? "Not Found" : statusCode == 409 ? "Conflict" : "Service Unavailable";
+        string header = "HTTP/1.1 " + statusCode + " " + status + "\r\n" +
+                        "Content-Type: application/json; charset=utf-8\r\n" +
+                        "Content-Length: " + body.Length + "\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "Connection: close\r\n\r\n";
+        byte[] head = Encoding.ASCII.GetBytes(header);
+        stream.Write(head, 0, head.Length);
         stream.Write(body, 0, body.Length);
         stream.Flush();
     }
