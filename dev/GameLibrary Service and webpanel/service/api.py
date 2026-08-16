@@ -19,6 +19,7 @@ from .apps import scan_apps, find_app
 BASE_DIR=Path(__file__).resolve().parent.parent
 WEB_DIR=BASE_DIR/"web"
 ARTWORK_DIR=BASE_DIR/"data"/"images"
+APPS_DIR=BASE_DIR/"apps"
 
 def _physical_disks():
     if not hasattr(ctypes,"windll"): return []
@@ -36,6 +37,7 @@ def _local_ip():
     except OSError:
         try: return socket.gethostbyname(socket.gethostname())
         except OSError: return "127.0.0.1"
+        
     finally: s.close()
 
 def _steam_details(app_id):
@@ -158,15 +160,11 @@ def create_app(db,metadata=None,config=None,playnite=None):
     @app.get("/api/apps/media/{app_id}/{kind}")
     def app_media(app_id:str,kind:str):
         if kind not in ("cover","capsule","hero","icon","logo"):return {"error":"not_found"}
-        # Path parameters are URL-decoded by FastAPI, but decode explicitly as well
-        # so names containing '+' or other URL characters resolve to the real app folder.
         app_name=urllib.parse.unquote(str(app_id))
         a=find_app(app_name)
         if not a:return {"error":"not_found"}
         app_folder=Path(a.get("relative_path") or a.get("app_id") or app_name)
         root=Path(os.environ.get("GAMEDRIVE_APPS_PATH") or APPS_DIR).resolve()
-        # Resolve the folder directly from the apps root; do not depend on the
-        # browser-facing URL stored in the app metadata.
         folder=(root/app_folder).resolve()
         if root not in folder.parents or not folder.is_dir():return {"error":"not_found"}
         names={
