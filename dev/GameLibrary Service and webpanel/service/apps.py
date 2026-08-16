@@ -17,12 +17,6 @@ def _read_text(path):
 
 
 def _resolve_app_executable(app_folder, game_dir, text):
-    """Resolve an app executable from exepath.txt.
-
-    Accepts a relative path (normally relative to Game/) or an absolute path
-    when it points inside the app folder. The latter is useful for existing
-    app definitions that already contain a fully-qualified Windows path.
-    """
     text = (text or "").strip()
     if not text:
         return None, []
@@ -32,20 +26,11 @@ def _resolve_app_executable(app_folder, game_dir, text):
         tokens = [text]
     if not tokens:
         return None, []
-
     raw = tokens[0].strip().strip('"').strip("'")
     if not raw:
         return None, []
-
     p = Path(raw)
-    candidates = []
-    if p.is_absolute():
-        candidates.append(p)
-    else:
-        # Game/<path> is the documented layout, while app/<path> keeps
-        # compatibility with older app packages.
-        candidates.extend((game_dir / p, app_folder / p))
-
+    candidates = [p] if p.is_absolute() else [game_dir / p, app_folder / p]
     app_root = app_folder.resolve()
     for candidate in candidates:
         try:
@@ -58,12 +43,6 @@ def _resolve_app_executable(app_folder, game_dir, text):
 
 
 def _find_image(folder, names):
-    for name in names:
-        path = folder / name
-        if path.is_file():
-            return str(path.resolve())
-    # Also accept case variations on Windows/filesystems where the exact
-    # spelling differs.
     wanted = {n.lower() for n in names}
     try:
         for path in folder.iterdir():
@@ -75,11 +54,9 @@ def _find_image(folder, names):
 
 
 def scan_apps(root=None):
-    """Scan every apps/<name> folder and return launcher-ready entries."""
     root = Path(root or os.environ.get("GAMEDRIVE_APPS_PATH") or APPS_DIR)
     if not root.is_dir():
         return []
-
     result = []
     for folder in sorted(root.iterdir(), key=lambda p: p.name.lower()):
         if not folder.is_dir():
@@ -88,15 +65,10 @@ def scan_apps(root=None):
         game_dir = folder / "Game"
         if not exepath.is_file():
             continue
-
         executable, arguments = _resolve_app_executable(folder, game_dir, _read_text(exepath))
-        if not executable:
-            # Keep the entry visible so a bad package cannot silently vanish
-            # from the Apps library. It remains clearly marked unlaunchable.
-            arguments = []
-
-        cover = _find_image(folder, ("Capsule.jpg", "Capsule.jpeg", "Capsule.png"))
-        icon = _find_image(folder, ("Icon.png", "Icon.jpg", "Icon.jpeg", "Capsule.png", "Capsule.jpg", "Capsule.jpeg"))
+        cover = _find_image(folder, ("Capsule.jpg", "Capsule.jpeg", "Capsule.png", "Capsule.webp"))
+        hero = _find_image(folder, ("Hero.jpg", "Hero.jpeg", "Hero.png", "Hero.webp", "Background.jpg", "Background.jpeg", "Background.png", "Background.webp"))
+        icon = _find_image(folder, ("Icon.png", "Icon.jpg", "Icon.jpeg", "Icon.webp", "Capsule.png", "Capsule.jpg", "Capsule.jpeg", "Capsule.webp"))
         result.append({
             "app_id": folder.name,
             "name": folder.name,
@@ -115,6 +87,7 @@ def scan_apps(root=None):
             "relative_path": str(folder.relative_to(root)),
             "cover": cover,
             "capsule": cover,
+            "hero": hero or cover,
             "icon": icon,
             "logo": icon,
         })
