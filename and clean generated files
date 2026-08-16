@@ -1,0 +1,190 @@
+ .gitignore                                         |     24 [32m+[m
+ .../GameDriveLIB/bin/Debug/GameDrive.dll           |    Bin [31m20480[m -> [32m0[m bytes
+ .../GameDriveLIB/bin/Debug/GameDrive.pdb           |    Bin [31m48640[m -> [32m0[m bytes
+ .../GameDriveLIB/bin/Debug/INIFileParser.dll       |    Bin [31m28672[m -> [32m0[m bytes
+ .../GameDriveLIB/bin/Debug/INIFileParser.xml       |   1181 [31m-[m
+ .../GameDriveLIB/bin/Debug/Playnite.SDK.dll        |    Bin [31m177952[m -> [32m0[m bytes
+ ...NETFramework,Version=v4.8.AssemblyAttributes.cs |      4 [31m-[m
+ .../DesignTimeResolveAssemblyReferencesInput.cache |    Bin [31m2178[m -> [32m0[m bytes
+ .../Debug/GameDrive.csproj.AssemblyReference.cache |    Bin [31m6338[m -> [32m0[m bytes
+ .../Debug/GameDrive.csproj.CoreCompileInputs.cache |      1 [31m-[m
+ .../Debug/GameDrive.csproj.FileListAbsolute.txt    |     21 [31m-[m
+ .../obj/Debug/GameDrive.csproj.Up2Date             |      0
+ .../GameDriveLIB/obj/Debug/GameDrive.dll           |    Bin [31m20480[m -> [32m0[m bytes
+ .../GameDriveLIB/obj/Debug/GameDrive.pdb           |    Bin [31m48640[m -> [32m0[m bytes
+ .../GameDriveLIB.csproj.AssemblyReference.cache    |    Bin [31m6241[m -> [32m0[m bytes
+ .../GameDriveLIB.csproj.CoreCompileInputs.cache    |      1 [31m-[m
+ .../Debug/GameDriveLIB.csproj.FileListAbsolute.txt |     12 [31m-[m
+ .../apps/Movie+/Capsule.jpg                        |    Bin [31m0[m -> [32m29006[m bytes
+ .../apps/Movie+/Exepath.txt}                       |      0
+ .../apps/Movie+/Game                               |      1 [32m+[m
+ .../apps/Youtube/Capsule.jpg                       |    Bin [31m0[m -> [32m28955[m bytes
+ .../apps/Youtube/Game/LICENSE.electron.txt         |     21 [32m+[m
+ .../apps/Youtube/Game/LICENSES.chromium.html       | 358915 [32m++++++++++++++++++[m
+ .../apps/Youtube/Game/VacuumTube-x64-Portable.zip  |    Bin [31m0[m -> [32m147922175[m bytes
+ .../apps/Youtube/Game/VacuumTube.exe               |    Bin [31m0[m -> [32m232365568[m bytes
+ .../apps/Youtube/Game/chrome_100_percent.pak       |    Bin [31m0[m -> [32m119889[m bytes
+ .../apps/Youtube/Game/chrome_200_percent.pak       |    Bin [31m0[m -> [32m197073[m bytes
+ .../apps/Youtube/Game/d3dcompiler_47.dll           |    Bin [31m0[m -> [32m4741488[m bytes
+ .../apps/Youtube/Game/dxcompiler.dll               |    Bin [31m0[m -> [32m25634304[m bytes
+ .../apps/Youtube/Game/dxil.dll                     |    Bin [31m0[m -> [32m1509760[m bytes
+ .../apps/Youtube/Game/ffmpeg.dll                   |    Bin [31m0[m -> [32m3057152[m bytes
+ .../apps/Youtube/Game/icudtl.dat                   |    Bin [31m0[m -> [32m10876560[m bytes
+ .../apps/Youtube/Game/libEGL.dll                   |    Bin [31m0[m -> [32m478208[m bytes
+ .../apps/Youtube/Game/libGLESv2.dll                |    Bin [31m0[m -> [32m7998464[m bytes
+ .../apps/Youtube/Game/locales/af.pak               |    Bin [31m0[m -> [32m620482[m bytes
+ .../apps/Youtube/Game/locales/am.pak               |    Bin [31m0[m -> [32m1006731[m bytes
+ .../apps/Youtube/Game/locales/ar.pak               |    Bin [31m0[m -> [32m1109717[m bytes
+ .../apps/Youtube/Game/locales/bg.pak               |    Bin [31m0[m -> [32m1150764[m bytes
+ .../apps/Youtube/Game/locales/bn.pak               |    Bin [31m0[m -> [32m1479936[m bytes
+ .../apps/Youtube/Game/locales/ca.pak               |    Bin [31m0[m -> [32m699615[m bytes
+ .../apps/Youtube/Game/locales/cs.pak               |    Bin [31m0[m -> [32m726069[m bytes
+ .../apps/Youtube/Game/locales/da.pak               |    Bin [31m0[m -> [32m652598[m bytes
+ .../apps/Youtube/Game/locales/de.pak               |    Bin [31m0[m -> [32m700808[m bytes
+ .../apps/Youtube/Game/locales/el.pak               |    Bin [31m0[m -> [32m1265039[m bytes
+ .../apps/Youtube/Game/locales/en-GB.pak            |    Bin [31m0[m -> [32m565496[m bytes
+ .../apps/Youtube/Game/locales/en-US.pak            |    Bin [31m0[m -> [32m571518[m bytes
+ .../apps/Youtube/Game/locales/es-419.pak           |    Bin [31m0[m -> [32m690681[m bytes
+ .../apps/Youtube/Game/locales/es.pak               |    Bin [31m0[m -> [32m686775[m bytes
+ .../apps/Youtube/Game/locales/et.pak               |    Bin [31m0[m -> [32m627098[m bytes
+ .../apps/Youtube/Game/locales/fa.pak               |    Bin [31m0[m -> [32m1038141[m bytes
+ .../apps/Youtube/Game/locales/fi.pak               |    Bin [31m0[m -> [32m638637[m bytes
+ .../apps/Youtube/Game/locales/fil.pak              |    Bin [31m0[m -> [32m723756[m bytes
+ .../apps/Youtube/Game/locales/fr.pak               |    Bin [31m0[m -> [32m746457[m bytes
+ .../apps/Youtube/Game/locales/gu.pak               |    Bin [31m0[m -> [32m1462607[m bytes
+ .../apps/Youtube/Game/locales/he.pak               |    Bin [31m0[m -> [32m908718[m bytes
+ .../apps/Youtube/Game/locales/hi.pak               |    Bin [31m0[m -> [32m1549657[m bytes
+ .../apps/Youtube/Game/locales/hr.pak               |    Bin [31m0[m -> [32m698898[m bytes
+ .../apps/Youtube/Game/locales/hu.pak               |    Bin [31m0[m -> [32m747469[m bytes
+ .../apps/Youtube/Game/locales/id.pak               |    Bin [31m0[m -> [32m618246[m bytes
+ .../apps/Youtube/Game/locales/it.pak               |    Bin [31m0[m -> [32m675895[m bytes
+ .../apps/Youtube/Game/locales/ja.pak               |    Bin [31m0[m -> [32m824122[m bytes
+ .../apps/Youtube/Game/locales/kn.pak               |    Bin [31m0[m -> [32m1681341[m bytes
+ .../apps/Youtube/Game/locales/ko.pak               |    Bin [31m0[m -> [32m701225[m bytes
+ .../apps/Youtube/Game/locales/lt.pak               |    Bin [31m0[m -> [32m759941[m bytes
+ .../apps/Youtube/Game/locales/lv.pak               |    Bin [31m0[m -> [32m757295[m bytes
+ .../apps/Youtube/Game/locales/ml.pak               |    Bin [31m0[m -> [32m1728736[m bytes
+ .../apps/Youtube/Game/locales/mr.pak               |    Bin [31m0[m -> [32m1431694[m bytes
+ .../apps/Youtube/Game/locales/ms.pak               |    Bin [31m0[m -> [32m651309[m bytes
+ .../apps/Youtube/Game/locales/nb.pak               |    Bin [31m0[m -> [32m623206[m bytes
+ .../apps/Youtube/Game/locales/nl.pak               |    Bin [31m0[m -> [32m649223[m bytes
+ .../apps/Youtube/Game/locales/pl.pak               |    Bin [31m0[m -> [32m725422[m bytes
+ .../apps/Youtube/Game/locales/pt-BR.pak            |    Bin [31m0[m -> [32m680413[m bytes
+ .../apps/Youtube/Game/locales/pt-PT.pak            |    Bin [31m0[m -> [32m684180[m bytes
+ .../apps/Youtube/Game/locales/ro.pak               |    Bin [31m0[m -> [32m710046[m bytes
+ .../apps/Youtube/Game/locales/ru.pak               |    Bin [31m0[m -> [32m1177875[m bytes
+ .../apps/Youtube/Game/locales/sk.pak               |    Bin [31m0[m -> [32m738142[m bytes
+ .../apps/Youtube/Game/locales/sl.pak               |    Bin [31m0[m -> [32m706747[m bytes
+ .../apps/Youtube/Game/locales/sr.pak               |    Bin [31m0[m -> [32m1088532[m bytes
+ .../apps/Youtube/Game/locales/sv.pak               |    Bin [31m0[m -> [32m630664[m bytes
+ .../apps/Youtube/Game/locales/sw.pak               |    Bin [31m0[m -> [32m667143[m bytes
+ .../apps/Youtube/Game/locales/ta.pak               |    Bin [31m0[m -> [32m1720238[m bytes
+ .../apps/Youtube/Game/locales/te.pak               |    Bin [31m0[m -> [32m1591907[m bytes
+ .../apps/Youtube/Game/locales/th.pak               |    Bin [31m0[m -> [32m1337464[m bytes
+ .../apps/Youtube/Game/locales/tr.pak               |    Bin [31m0[m -> [32m679614[m bytes
+ .../apps/Youtube/Game/locales/uk.pak               |    Bin [31m0[m -> [32m1185537[m bytes
+ .../apps/Youtube/Game/locales/ur.pak               |    Bin [31m0[m -> [32m1021689[m bytes
+ .../apps/Youtube/Game/locales/vi.pak               |    Bin [31m0[m -> [32m808093[m bytes
+ .../apps/Youtube/Game/locales/zh-CN.pak            |    Bin [31m0[m -> [32m577797[m bytes
+ .../apps/Youtube/Game/locales/zh-TW.pak            |    Bin [31m0[m -> [32m570095[m bytes
+ .../apps/Youtube/Game/resources.pak                |    Bin [31m0[m -> [32m6876382[m bytes
+ .../apps/Youtube/Game/resources/app-update.yml     |      4 [32m+[m
+ .../apps/Youtube/Game/resources/app.asar           |    Bin [31m0[m -> [32m8652552[m bytes
+ .../apps/Youtube/Game/snapshot_blob.bin            |    Bin [31m0[m -> [32m346432[m bytes
+ .../apps/Youtube/Game/v8_context_snapshot.bin      |    Bin [31m0[m -> [32m721176[m bytes
+ .../apps/Youtube/Game/vk_swiftshader.dll           |    Bin [31m0[m -> [32m5520384[m bytes
+ .../apps/Youtube/Game/vk_swiftshader_icd.json      |      1 [32m+[m
+ .../apps/Youtube/Game/vulkan-1.dll                 |    Bin [31m0[m -> [32m925696[m bytes
+ .../apps/Youtube/exepath.txt                       |      1 [32m+[m
+ dev/GameLibrary Service and webpanel/config.json   |      6 [32m+[m[31m-[m
+ .../data/database.db                               |    Bin [31m45056[m -> [32m45056[m bytes
+ .../data/database.db-shm                           |    Bin [31m32768[m -> [32m0[m bytes
+ .../data/database.db-wal                           |    Bin [31m4128272[m -> [32m0[m bytes
+ .../images/A Dance of Fire and Ice/capsule.png     |    Bin [31m0[m -> [32m468047[m bytes
+ .../data/images/A Dance of Fire and Ice/cover.png  |    Bin [31m0[m -> [32m468047[m bytes
+ .../data/images/A Dance of Fire and Ice/hero.jpg   |    Bin [31m0[m -> [32m407678[m bytes
+ .../data/images/Baldi_s Basics Plus/capsule.png    |    Bin [31m0[m -> [32m15304[m bytes
+ .../data/images/Baldi_s Basics Plus/cover.png      |    Bin [31m0[m -> [32m15304[m bytes
+ .../data/images/Baldi_s Basics Plus/hero.png       |    Bin [31m0[m -> [32m55807[m bytes
+ .../Call of Duty 4_ Modern Warfare/capsule.png     |    Bin [31m0[m -> [32m706161[m bytes
+ .../Call of Duty 4_ Modern Warfare/cover.png       |    Bin [31m0[m -> [32m706161[m bytes
+ .../images/Call of Duty 4_ Modern Warfare/hero.png |    Bin [31m0[m -> [32m5159430[m bytes
+ .../data/images/Call of Duty/capsule.jpg           |    Bin [31m0[m -> [32m208040[m bytes
+ .../data/images/Call of Duty/cover.jpg             |    Bin [31m0[m -> [32m208040[m bytes
+ .../data/images/Call of Duty/hero.png              |    Bin [31m0[m -> [32m2094150[m bytes
+ .../Call of Duty_ Advanced Warfare/capsule.jpg     |    Bin [31m0[m -> [32m186649[m bytes
+ .../Call of Duty_ Advanced Warfare/cover.jpg       |    Bin [31m0[m -> [32m186649[m bytes
+ .../images/Call of Duty_ Advanced Warfare/hero.png |    Bin [31m0[m -> [32m3006210[m bytes
+ .../images/Call of Duty_ Black Ops II/capsule.jpg  |    Bin [31m0[m -> [32m344743[m bytes
+ .../images/Call of Duty_ Black Ops II/cover.jpg    |    Bin [31m0[m -> [32m344743[m bytes
+ .../images/Call of Duty_ Black Ops II/hero.png     |    Bin [31m0[m -> [32m595091[m bytes
+ .../images/Call of Duty_ Black Ops III/capsule.png |    Bin [31m0[m -> [32m1085820[m bytes
+ .../images/Call of Duty_ Black Ops III/cover.png   |    Bin [31m0[m -> [32m1085820[m bytes
+ .../images/Call of Duty_ Black Ops III/hero.jpg    |    Bin [31m0[m -> [32m208608[m bytes
+ .../images/Call of Duty_ Black Ops/capsule.png     |    Bin [31m0[m -> [32m692361[m bytes
+ .../data/images/Call of Duty_ Black Ops/cover.png  |    Bin [31m0[m -> [32m692361[m bytes
+ .../data/images/Call of Duty_ Black Ops/hero.png   |    Bin [31m0[m -> [32m26808835[m bytes
+ .../data/images/Call of Duty_ Ghosts/capsule.jpg   |    Bin [31m0[m -> [32m470119[m bytes
+ .../data/images/Call of Duty_ Ghosts/cover.jpg     |    Bin [31m0[m -> [32m470119[m bytes
+ .../data/images/Call of Duty_ Ghosts/hero.png      |    Bin [31m0[m -> [32m876752[m bytes
+ .../Call of Duty_ Modern Warfare 2/capsule.jpg     |    Bin [31m0[m -> [32m382746[m bytes
+ .../Call of Duty_ Modern Warfare 2/cover.jpg       |    Bin [31m0[m -> [32m382746[m bytes
+ .../images/Call of Duty_ Modern Warfare 2/hero.png |    Bin [31m0[m -> [32m562955[m bytes
+ .../Call of Duty_ Modern Warfare 3/capsule.jpg     |    Bin [31m0[m -> [32m243200[m bytes
+ .../Call of Duty_ Modern Warfare 3/cover.jpg       |    Bin [31m0[m -> [32m243200[m bytes
+ .../images/Call of Duty_ Modern Warfare 3/hero.jpg |    Bin [31m0[m -> [32m395583[m bytes
+ .../Call of Duty_ Modern Warfare II/capsule.png    |    Bin [31m0[m -> [32m2706360[m bytes
+ .../Call of Duty_ Modern Warfare II/cover.png      |    Bin [31m0[m -> [32m2706360[m bytes
+ .../Call of Duty_ Modern Warfare II/hero.jpg       |    Bin [31m0[m -> [32m2547761[m bytes
+ .../data/images/Call of Duty_ Vanguard/capsule.jpg |    Bin [31m0[m -> [32m347553[m bytes
+ .../data/images/Call of Duty_ Vanguard/cover.jpg   |    Bin [31m0[m -> [32m347553[m bytes
+ .../data/images/Call of Duty_ Vanguard/hero.jpg    |    Bin [31m0[m -> [32m589670[m bytes
+ .../images/Call of Duty_ World at War/capsule.png  |    Bin [31m0[m -> [32m996468[m bytes
+ .../images/Call of Duty_ World at War/cover.png    |    Bin [31m0[m -> [32m996468[m bytes
+ .../images/Call of Duty_ World at War/hero.jpg     |    Bin [31m0[m -> [32m1012255[m bytes
+ .../data/images/Dungeon Keeper 2/capsule.jpg       |    Bin [31m0[m -> [32m241586[m bytes
+ .../data/images/Dungeon Keeper 2/cover.jpg         |    Bin [31m0[m -> [32m241586[m bytes
+ .../data/images/Dungeon Keeper 2/hero.jpg          |    Bin [31m0[m -> [32m236999[m bytes
+ .../data/images/Dungeon Keeper Gold/capsule.png    |    Bin [31m0[m -> [32m552374[m bytes
+ .../data/images/Dungeon Keeper Gold/cover.png      |    Bin [31m0[m -> [32m552374[m bytes
+ .../data/images/Dungeon Keeper Gold/hero.jpg       |    Bin [31m0[m -> [32m376889[m bytes
+ .../images/Environmental Station Alpha/capsule.png |    Bin [31m0[m -> [32m541485[m bytes
+ .../images/Environmental Station Alpha/cover.png   |    Bin [31m0[m -> [32m541485[m bytes
+ .../images/Environmental Station Alpha/hero.png    |    Bin [31m0[m -> [32m159000[m bytes
+ .../data/images/Grandpa High On Retro/capsule.jpg  |    Bin [31m0[m -> [32m388252[m bytes
+ .../data/images/Grandpa High On Retro/cover.jpg    |    Bin [31m0[m -> [32m388252[m bytes
+ .../data/images/Life Is Strange/capsule.jpg        |    Bin [31m0[m -> [32m457893[m bytes
+ .../data/images/Life Is Strange/cover.jpg          |    Bin [31m0[m -> [32m457893[m bytes
+ .../data/images/Life Is Strange/hero.jpg           |    Bin [31m0[m -> [32m509280[m bytes
+ .../data/images/Lossless Scaling/capsule.png       |    Bin [31m0[m -> [32m7497[m bytes
+ .../data/images/Lossless Scaling/cover.png         |    Bin [31m0[m -> [32m7497[m bytes
+ .../data/images/Lossless Scaling/hero.png          |    Bin [31m0[m -> [32m239[m bytes
+ .../data/images/Mouthwashing/capsule.png           |    Bin [31m0[m -> [32m1009377[m bytes
+ .../data/images/Mouthwashing/cover.png             |    Bin [31m0[m -> [32m1009377[m bytes
+ .../data/images/Mouthwashing/hero.jpg              |    Bin [31m0[m -> [32m330381[m bytes
+ .../Rise of Nations_ Extended Edition/capsule.png  |    Bin [31m0[m -> [32m312722[m bytes
+ .../Rise of Nations_ Extended Edition/cover.png    |    Bin [31m0[m -> [32m312722[m bytes
+ .../Rise of Nations_ Extended Edition/hero.jpg     |    Bin [31m0[m -> [32m245525[m bytes
+ .../RollerCoaster Tycoon Classic/capsule.jpg       |    Bin [31m0[m -> [32m527480[m bytes
+ .../images/RollerCoaster Tycoon Classic/cover.jpg  |    Bin [31m0[m -> [32m527480[m bytes
+ .../images/RollerCoaster Tycoon Classic/hero.png   |    Bin [31m0[m -> [32m1680358[m bytes
+ .../data/images/Split Fiction/capsule.png          |    Bin [31m0[m -> [32m797685[m bytes
+ .../data/images/Split Fiction/cover.png            |    Bin [31m0[m -> [32m797685[m bytes
+ .../data/images/Split Fiction/hero.png             |    Bin [31m0[m -> [32m6438307[m bytes
+ .../logs/backend.log                               |     20 [31m-[m
+ .../logs/launcher.log                              |      5 [31m-[m
+ .../logs/service.log                               |    696 [31m-[m
+ .../service/__pycache__/__init__.cpython-310.pyc   |    Bin [31m131[m -> [32m0[m bytes
+ .../service/__pycache__/api.cpython-310.pyc        |    Bin [31m2936[m -> [32m0[m bytes
+ .../service/__pycache__/database.cpython-310.pyc   |    Bin [31m9742[m -> [32m0[m bytes
+ .../service/__pycache__/metadata.cpython-310.pyc   |    Bin [31m6645[m -> [32m0[m bytes
+ .../service/__pycache__/scanner.cpython-310.pyc    |    Bin [31m4317[m -> [32m0[m bytes
+ .../service/__pycache__/service.cpython-310.pyc    |    Bin [31m2542[m -> [32m0[m bytes
+ .../__pycache__/config.cpython-310.pyc             |    Bin [31m452[m -> [32m0[m bytes
+ .../__pycache__/connection.cpython-310.pyc         |    Bin [31m0[m -> [32m3135[m bytes
+ .../events/__pycache__/__init__.cpython-310.pyc    |    Bin [31m0[m -> [32m173[m bytes
+ .../events/__pycache__/on_message.cpython-310.pyc  |    Bin [31m0[m -> [32m1142[m bytes
+ .../events/__pycache__/on_ready.cpython-310.pyc    |    Bin [31m0[m -> [32m1103[m bytes
+ .../server/__pycache__/connections.cpython-310.pyc |    Bin [31m4059[m -> [32m5103[m bytes
+ .../server/__pycache__/web.cpython-310.pyc         |    Bin [31m0[m -> [32m4545[m bytes
+ 189 files changed, 358970 insertions(+), 1944 deletions(-)
