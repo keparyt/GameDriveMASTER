@@ -157,15 +157,28 @@ class PlayniteBridge:
     def _action(self, game):
         return {"Path": game.get("executable") or "", "Arguments": game.get("arguments") or "", "WorkingDir": game.get("workingDirectory") or ""}
 
-    @staticmethod
-    def _media_value(value):
+    def _media_value(self, value, game_id=None):
         if not value: return None
         value = str(value)
         if value.startswith("data:") or value.startswith("http://") or value.startswith("https://"):
             return value
         if value.startswith("file://"):
             parsed = urlparse(value)
-            return unquote(parsed.path.lstrip("/") if parsed.netloc else parsed.path)
+            if parsed.netloc:
+                value = f"\\\\{parsed.netloc}{unquote(parsed.path)}"
+            else:
+                value = unquote(parsed.path)
+                if len(value) >= 3 and value.startswith("/") and value[2] == ":":
+                    value = value[1:]
+        # Playnite stores its downloaded artwork in library/files/<game GUID>/.
+        # The API may return only the artwork filename, so resolve it directly
+        # against that game's Playnite media directory.
+        p = Path(os.path.expandvars(os.path.expanduser(value)))
+        if not p.is_absolute() and game_id and self.library_path:
+            game_media_dir = self.library_path / "files" / str(game_id)
+            candidate = game_media_dir / p
+            if candidate.is_file():
+                return str(candidate.resolve())
         return value
 
     def _parse(self, game):
@@ -173,9 +186,9 @@ class PlayniteBridge:
         gid = str(game.get("id") or "")
         if not gid: return None
         action = self._action(game)
-        cover = self._media_value(game.get("cover") or game.get("coverImage"))
-        hero = self._media_value(game.get("hero") or game.get("backgroundImage"))
-        logo = self._media_value(game.get("logo") or game.get("icon"))
+        cover = self._media_value(game.get("cover") or game.get("coverImage"), gid)
+        hero = self._media_value(game.get("hero") or game.get("backgroundImage"), gid)
+        logo = self._media_value(game.get("logo") or game.get("icon"), gid)
         return {
             "playnite_id": gid,
             "name": game.get("name") or "Unknown Game",
@@ -227,3 +240,14 @@ class PlayniteBridge:
         return cached
 
     def _window(self): return None
+
+    def uri(self, playnite_id):
+        return f"playnite://game/{quote(str(playnite_id), safe='')}"
+
+    def launch(self, playnite_id):
+        if not playnite_id: return {"ok": False, "error": "missing_playnite_id"}
+        try:
+            result = self._request(f"/games/{quote(str(playnite_id), safe='')}/launch", timeout=5.0)
+            return result if isinstance(result, dict) else {"ok": bool(result)}
+        except Exception as exc:
+            return {"ok": False, "error": "playnite_launch_failed", "detail": str(exc)}
