@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -43,60 +43,6 @@
 .storage-empty,.muted{display:block;padding:12px;color:#625d53;font-size:7px;text-align:center;border:1px dashed rgba(212,175,90,.09);border-radius:7px}
 @media(max-width:700px){.device-summary{grid-template-columns:1fr;gap:6px}.device-summary .drive-label,.device-summary .drive-count{padding-top:0}.storage-list{grid-template-columns:1fr}.partition-row{grid-template-columns:7px 34px minmax(0,1fr) 58px}.partition-row em{display:none}.filter{position:static;margin:0 0 10px}.drive-panel{padding-bottom:4px}}
 </style>
-
-<style id="compact-device-panel">
-/* Compact storage/device panel */
-.hardware-card {
-    padding: 10px 12px !important;
-    border-radius: 10px !important;
-}
-
-.hardware-head {
-    min-height: 42px;
-    gap: 10px;
-}
-
-.hardware-main {
-    min-width: 0;
-    flex: 1;
-}
-
-.hardware-head strong {
-    font-size: 14px !important;
-}
-
-.hardware-head small {
-    font-size: 11px !important;
-}
-
-.hardware-head b {
-    font-size: 10px !important;
-    white-space: nowrap;
-}
-
-.partition-list {
-    margin-top: 6px !important;
-    padding-top: 6px !important;
-}
-
-.partition-row {
-    padding: 3px 0 !important;
-    min-height: 20px !important;
-    font-size: 11px !important;
-}
-
-.partition-row em {
-    font-size: 10px !important;
-}
-
-.storage-section {
-    margin-bottom: 12px !important;
-}
-
-.storage-section-title {
-    margin-bottom: 6px !important;
-}
-</style>
 </head>
 <body>
 <header class="topbar">
@@ -110,7 +56,7 @@
   </section>
   <section class="workspace-head">
     <div class="page-title"><span class="eyebrow"><i></i> GAME LIBRARY</span><h1>Your collection</h1></div>
-    <div class="hero-search"><span aria-hidden="true">âŒ•</span><input id="search" autofocus autocomplete="off" placeholder="Search games..." aria-label="Search games"><kbd>CTRL K</kbd></div>
+    <div class="hero-search"><span aria-hidden="true">⌕</span><input id="search" autofocus autocomplete="off" placeholder="Search games..." aria-label="Search games"><kbd>CTRL K</kbd></div>
   </section>
   <nav class="library-view-selector" aria-label="Library view">
     <button class="view-button active" data-library-view="drives" type="button">DRIVES</button>
@@ -121,7 +67,7 @@
     <div class="drive-summary device-summary">
       <div class="drive-label"><span class="drive-status-dot"></span><span>DEVICES</span></div>
       <div id="drives" class="drives"></div>
-      <div class="drive-count" id="drive-count">Loading devicesâ€¦</div>
+      <div class="drive-count" id="drive-count">Loading devices…</div>
     </div>
     <label class="filter" title="Only show games on connected drives"><input id="online" type="checkbox"><span class="switch"></span>Connected only</label>
   </section>
@@ -134,11 +80,11 @@
 <div id="game-modal" class="modal" aria-hidden="true">
   <div class="modal-backdrop" data-close-game></div>
   <article class="game-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title">
-    <button class="close-game" data-close-game aria-label="Close">Ã—</button>
+    <button class="close-game" data-close-game aria-label="Close">×</button>
     <div id="detail-hero" class="detail-hero"><div class="hero-vignette"></div></div>
     <div class="detail-body">
       <div class="detail-heading"><img id="detail-logo" class="detail-logo" alt=""><h2 id="detail-title">Game</h2><div id="detail-meta" class="detail-meta"></div><div id="detail-source" class="detail-source"></div></div>
-      <div class="detail-actions"><button id="launch-game" class="launch-button"><span>â–¶</span> PLAY</button><span id="launch-status" class="launch-status"></span></div>
+      <div class="detail-actions"><button id="launch-game" class="launch-button"><span>▶</span> PLAY</button><span id="launch-status" class="launch-status"></span></div>
       <section id="trailer-section" class="trailer-section"><div class="detail-kicker">TRAILER</div><video id="detail-trailer" controls playsinline preload="metadata"></video></section>
       <section class="description-section"><div class="detail-kicker">ABOUT THE GAME</div><p id="detail-description">No description available.</p></section>
     </div>
