@@ -158,14 +158,30 @@ def create_app(db,metadata=None,config=None,playnite=None):
     @app.get("/api/apps/media/{app_id}/{kind}")
     def app_media(app_id:str,kind:str):
         if kind not in ("cover","capsule","hero","icon","logo"):return {"error":"not_found"}
-        a=find_app(app_id)
+        # Path parameters are URL-decoded by FastAPI, but decode explicitly as well
+        # so names containing '+' or other URL characters resolve to the real app folder.
+        app_name=urllib.parse.unquote(str(app_id))
+        a=find_app(app_name)
         if not a:return {"error":"not_found"}
-        if kind in ("cover","capsule"):value=a.get("cover")
-        elif kind=="hero":value=a.get("hero")
-        else:value=a.get("icon")
-        if not value:return {"error":"not_found"}
-        path=_media_file_path(value,[Path(a["install_directory"]).parent,Path(a["install_directory"]),BASE_DIR/"apps"])
-        if path:return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
+        app_folder=Path(a.get("relative_path") or a.get("app_id") or app_name)
+        root=Path(os.environ.get("GAMEDRIVE_APPS_PATH") or APPS_DIR).resolve()
+        # Resolve the folder directly from the apps root; do not depend on the
+        # browser-facing URL stored in the app metadata.
+        folder=(root/app_folder).resolve()
+        if root not in folder.parents or not folder.is_dir():return {"error":"not_found"}
+        names={
+            "cover":("Capsule.jpg","Capsule.jpeg","Capsule.png","Capsule.webp"),
+            "capsule":("Capsule.jpg","Capsule.jpeg","Capsule.png","Capsule.webp"),
+            "hero":("Hero.jpg","Hero.jpeg","Hero.png","Hero.webp","Background.jpg","Background.jpeg","Background.png","Background.webp"),
+            "icon":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp"),
+            "logo":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp"),
+        }
+        wanted={n.casefold() for n in names[kind]}
+        try:
+            path=next((p for p in folder.iterdir() if p.is_file() and p.name.casefold() in wanted),None)
+        except OSError:
+            path=None
+        if path and path.is_file():return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
         return {"error":"not_found"}
     @app.get("/api/playnite/media/{playnite_id}/{kind}")
     def p_media(playnite_id:str,kind:str):
@@ -178,45 +194,13 @@ def create_app(db,metadata=None,config=None,playnite=None):
         if value.startswith("http://") or value.startswith("https://"):
             try:
                 req=urllib.request.Request(value,headers={"User-Agent":"GameLibrary/1.0"})
-                with urllib.request.urlopen(req,timeout=8) as r:data=r.read();ctype=r.headers.get_content_type() or "application/octet-stream"
-                return Response(data,media_type=ctype,headers={"Cache-Control":"public, max-age=86400"})
-            except Exception:return {"error":"media_unavailable"}
-        appdata=Path(os.environ.get("APPDATA","") ) if os.environ.get("APPDATA") else None
-        bases=[playnite.library_path,playnite.library_path.parent if playnite.library_path else None,playnite.playnite_path.parent if playnite.playnite_path else None,appdata/"Playnite" if appdata else None]
-        path=_media_file_path(value,bases)
-        if path:
-            allowed=[]
-            for root in bases:
-                if root:
-                    try:allowed.append(Path(root).resolve())
-                    except Exception:pass
-            if any(root==path or root in path.parents for root in allowed):return FileResponse(path)
+                with urllib.request.urlopen(req,timeout=10) as r:return Response(r.read(),media_type=r.headers.get_content_type(),headers={"Cache-Control":"public, max-age=86400"})
+            except Exception:return {"error":"not_found"}
+        path=_media_file_path(value,[Path(g.get("install_directory") or ""),BASE_DIR/"apps"])
+        if path:return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
         return {"error":"not_found"}
-    @app.get("/api/health")
-    def health():return {"ok":True,"service":"GameLibrary","playnite":playnite.status,"apps_count":len(scan_apps()),"metadata_enabled":bool(metadata and metadata.enabled)}
-    @app.get("/api/network")
-    def network():host,port=_local_ip(),int((config or {}).get("api_port",8765));return {"ip":host,"port":port,"url":f"http://{host}:{port}/","playnite_configured":bool(playnite.playnite_path)}
-    @app.get("/api/network/qr")
-    def qr(text:str=Query(...,min_length=1,max_length=500)):
-        image=qrcode.make(text);b=io.BytesIO();image.save(b,format="PNG");return Response(b.getvalue(),media_type="image/png",headers={"Cache-Control":"no-store"})
-    @app.post("/api/playnite/fullscreen")
-    def fullscreen():
-        if not playnite.playnite_path:return {"ok":False,"error":"playnite_not_configured"}
-        if not playnite.playnite_path.is_file():return {"ok":False,"error":"playnite_path_not_found"}
-        try:subprocess.Popen([str(playnite.playnite_path),"--startfullscreen"],cwd=str(playnite.playnite_path.parent),creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0));return {"ok":True}
-        except Exception as e:return {"ok":False,"error":"playnite_launch_failed","detail":str(e)}
-    @app.get("/api/drives")
-    def drives():
-        with db.lock:r=db.conn.execute("SELECT id,uuid,name,description,last_letter,connected,last_seen FROM drives ORDER BY connected DESC,name COLLATE NOCASE").fetchall()
-        return [dict(x) for x in r]
-    @app.get("/api/system/disks")
-    def disks():return _physical_disks()
-    @app.get("/api/apps")
-    def apps(q:str=Query("",max_length=200)):return [a for a in scan_apps() if not q or _norm(q) in _norm(a["name"])]
     @app.get("/api/games")
-    def games(q:str=Query("",max_length=200),connected_only:bool=False,mode:str="playlist"):
-        mode=mode if mode in ("playlist","drives","apps") else "playlist"
-        return library(q,connected_only,mode)
+    def games(q:str="",connected_only:bool=Query(False),mode:str="playlist"):return library(q,connected_only,mode)
     @app.get("/api/games/{game_id}")
     def game(game_id:str):return find(game_id) or {"error":"not_found"}
     @app.get("/api/games/{game_id}/details")
