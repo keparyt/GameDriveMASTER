@@ -64,6 +64,20 @@ class Database:
             self.conn.execute("UPDATE drives SET connected=0")
             self.conn.commit()
 
+    def mark_unseen_disconnected(self, connected_ids):
+        """Mark only previously indexed drives that were not found by this scan.
+
+        Unlike mark_disconnected(), this prevents a normal refresh from making
+        every drive briefly appear offline while the scanner is still walking
+        the drive letters.
+        """
+        with self.lock:
+            rows = self.conn.execute("SELECT id, uuid FROM drives").fetchall()
+            for row in rows:
+                if row["uuid"] not in connected_ids:
+                    self.conn.execute("UPDATE drives SET connected=0 WHERE id=?", (row["id"],))
+            self.conn.commit()
+
     def upsert_drive(self, uuid, name, description, letter, legacy_uuid=None):
         """Create/update one GameDrive partition."""
         timestamp = now()
