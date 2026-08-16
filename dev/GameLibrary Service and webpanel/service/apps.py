@@ -17,6 +17,12 @@ def _read_text(path):
 
 
 def _resolve_app_executable(app_folder, game_dir, text):
+    """Resolve an app entrypoint from exepath.txt.
+
+    Entries may be executables or small launcher scripts. Script files are
+    converted to an interpreter command so the normal app launch endpoint
+    can start them through subprocess.Popen.
+    """
     text = (text or "").strip()
     if not text:
         return None, []
@@ -29,14 +35,34 @@ def _resolve_app_executable(app_folder, game_dir, text):
     raw = tokens[0].strip().strip('"').strip("'")
     if not raw:
         return None, []
+
     p = Path(raw)
     candidates = [p] if p.is_absolute() else [game_dir / p, app_folder / p]
     app_root = app_folder.resolve()
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
-            if (app_root == resolved or app_root in resolved.parents) and resolved.is_file():
-                return resolved, tokens[1:]
+            if not ((app_root == resolved or app_root in resolved.parents) and resolved.is_file()):
+                continue
+
+            suffix = resolved.suffix.lower()
+            extra = tokens[1:]
+            system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+
+            if suffix == ".ps1":
+                return system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe", [
+                    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(resolved), *extra
+                ]
+            if suffix in (".cmd", ".bat"):
+                return Path(os.environ.get("ComSpec", "cmd.exe")), [
+                    "/d", "/c", str(resolved), *extra
+                ]
+            if suffix == ".py":
+                return Path(os.environ.get("PYTHON", "python.exe")), [str(resolved), *extra]
+            if suffix == ".vbs":
+                return system_root / "System32" / "wscript.exe", [str(resolved), *extra]
+
+            return resolved, extra
         except (OSError, ValueError):
             continue
     return None, []
