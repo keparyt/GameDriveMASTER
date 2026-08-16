@@ -70,6 +70,9 @@ public class GameDriveLibrary : LibraryPlugin
     private const int LibraryApiPort = 38123;
     private volatile bool libraryReady;
 
+    // Override with GAMEDRIVE_APPS_PATH when the webpanel/apps folder is elsewhere.
+    private static string AppsRoot => Environment.GetEnvironmentVariable("GAMEDRIVE_APPS_PATH") ?? @"E:\DEV\GameDriveMASTER\dev\GameLibrary Service and webpanel\apps";
+
     public override Guid Id { get; } = Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
     public override string Name => "GameDrive";
 
@@ -142,7 +145,46 @@ public class GameDriveLibrary : LibraryPlugin
                 }
             }
         }
+
+        AddApps(games);
         return games;
+    }
+
+    private void AddApps(List<GameMetadata> games)
+    {
+        string root = AppsRoot;
+        if (!Directory.Exists(root))
+        {
+            logger.Info($"GameDrive: Apps directory not found: {root}");
+            return;
+        }
+
+        foreach (string appFolder in Directory.GetDirectories(root))
+        {
+            string name = Path.GetFileName(appFolder);
+            string exeTxt = Path.Combine(appFolder, "exepath.txt");
+            string gameDir = Path.Combine(appFolder, "Game");
+            if (!File.Exists(exeTxt) || !Directory.Exists(gameDir)) continue;
+
+            string relativeExe;
+            try { relativeExe = File.ReadAllText(exeTxt).Trim(); } catch { continue; }
+            if (string.IsNullOrWhiteSpace(relativeExe)) continue;
+            if (Path.IsPathRooted(relativeExe) || relativeExe.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries).Contains("..")) continue;
+
+            string exe = Path.GetFullPath(Path.Combine(gameDir, relativeExe));
+            string fullGameDir = Path.GetFullPath(gameDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!File.Exists(exe) || !exe.StartsWith(fullGameDir, StringComparison.OrdinalIgnoreCase)) continue;
+
+            games.Add(new GameMetadata
+            {
+                Name = name,
+                GameId = "app:" + name,
+                InstallDirectory = gameDir,
+                IsInstalled = true,
+                GameActions = new List<GameAction> { new GameAction { Name = "Open", Type = GameActionType.File, Path = exe, IsPlayAction = true, WorkingDir = gameDir } },
+                Categories = new HashSet<MetadataProperty> { new MetadataProperty { Name = "Apps" } }
+            });
+        }
     }
 
     private void StartLibraryApi()
