@@ -51,7 +51,7 @@ class PlayniteBridge:
         return p
 
     def _default_library_path(self):
-        local_app_data = os.environ.get("LOCALAPPDATA")
+        local_app_data = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
         if local_app_data:
             return Path(local_app_data) / "Playnite" / "library"
         return None
@@ -67,6 +67,25 @@ class PlayniteBridge:
                 return p
         return None
 
+    def _normalize_api_json(self, value):
+        """Normalize DataContractJsonSerializer's Dictionary<string,object> output.
+
+        The Playnite plugin currently serializes dictionaries as arrays of
+        {"Key": ..., "Value": ...}. Convert those back to normal JSON objects
+        before the rest of the bridge consumes the response.
+        """
+        if isinstance(value, list):
+            normalized = [self._normalize_api_json(item) for item in value]
+            if normalized and all(
+                isinstance(item, dict) and set(item.keys()) == {"Key", "Value"}
+                for item in normalized
+            ):
+                return {str(item["Key"]): item["Value"] for item in normalized}
+            return normalized
+        if isinstance(value, dict):
+            return {str(key): self._normalize_api_json(item) for key, item in value.items()}
+        return value
+
     def _probe_api(self, timeout=1.0):
         if not self.enabled:
             with self._lock:
@@ -80,8 +99,10 @@ class PlayniteBridge:
             with self._lock:
                 self._api_available = available
                 self._api_checked_at = time.monotonic()
+            if available:
+                log.info("GameDrive Playnite API ready: %s installed game(s)", response.get("installedCount", "unknown"))
             return available
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._api_available = False
                 self._api_checked_at = time.monotonic()
@@ -111,6 +132,7 @@ class PlayniteBridge:
         with urlopen(request, timeout=self.API_REQUEST_TIMEOUT if timeout is None else timeout) as response:
             raw = response.read()
         data = json.loads(raw.decode("utf-8"))
+        data = self._normalize_api_json(data)
         if isinstance(data, dict) and data.get("ok") is False:
             raise RuntimeError(data.get("error") or "Playnite API request failed")
         return data
@@ -258,68 +280,4 @@ class PlayniteBridge:
         return cached
 
     def _window(self):
-        if not hasattr(ctypes, "windll"):
-            return None
-        user32 = ctypes.windll.user32
-        found = {"h": None}
-        cb = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-        @cb
-        def enum(hwnd, _):
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            pid = ctypes.c_ulong()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            try:
-                r = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {pid.value}", "/FO", "CSV", "/NH"],
-                    capture_output=True, text=True, timeout=2,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                if "Playnite.DesktopApp.exe" in r.stdout:
-                    found["h"] = hwnd
-                    return False
-            except Exception:
-                pass
-            return True
-
-        user32.EnumWindows(enum, 0)
-        return found["h"]
-
-    def refresh(self, force=False):
-        if not self.enabled:
-            return False
-        try:
-            self._ensure_started()
-            hwnd = self._window()
-            if not hwnd and self._is_running():
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and not self._window():
-                    time.sleep(0.25)
-                hwnd = self._window()
-            if hwnd:
-                u = ctypes.windll.user32
-                u.PostMessageW(hwnd, 0x0100, 0x74, 0)
-                u.PostMessageW(hwnd, 0x0101, 0x74, 0)
-                time.sleep(0.75)
-                self._probe_api(timeout=1.0)
-                self.read_games(force=True)
-                return True
-        except Exception as exc:
-            self._last_error = str(exc)
-            log.warning("Could not refresh Playnite library: %s", exc)
-        return False
-
-    def uri(self, playnite_id):
-        return "playnite://playnite/" + quote(str(playnite_id), safe="")
-
-    def launch(self, playnite_id):
-        if not self.enabled:
-            return {"ok": False, "error": "playnite_disabled"}
-        try:
-            self._ensure_started()
-            data = self._request("/games/" + quote(str(playnite_id), safe="") + "/launch", timeout=10)
-            return data if isinstance(data, dict) else {"ok": True}
-        except Exception as exc:
-            self._last_error = str(exc)
-            return {"ok": False, "error": "playnite_launch_failed", "detail": str(exc)}
+        return None
