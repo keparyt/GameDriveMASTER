@@ -68,10 +68,6 @@ def main():
         playnite = PlayniteBridge(config.get("playnite", {}))
 
         if playnite.enabled:
-            # Start Playnite immediately, but never restart it just because the
-            # extension API takes a few seconds to load. Playnite initializes
-            # library extensions asynchronously and the API can legitimately
-            # appear after the process itself is already running.
             try:
                 playnite.start(wait_for_api=False)
             except Exception:
@@ -82,13 +78,15 @@ def main():
                 logged_wait = False
                 while not stop_event.is_set() and time.monotonic() < deadline:
                     try:
-                        if playnite.available:
+                        # start(wait_for_api=False) intentionally doesn't probe the API.
+                        # Probe it here so `available` can actually transition to true.
+                        if playnite._probe_api(timeout=1.0):
                             log.info("GameDrive Playnite API is ready")
-                            # Give Playnite's library update/import cycle time to
-                            # finish before treating an empty /games response as
-                            # the real installed-game list.
                             for attempt in range(20):
                                 games = playnite.read_games(force=True)
+                                # read_games is cached/background by design, so inspect
+                                # the current bridge state after giving the refresh thread
+                                # a moment to populate it.
                                 if games:
                                     log.info("Playnite library ready: %d installed game(s)", len(games))
                                     return
@@ -100,9 +98,6 @@ def main():
                         if not logged_wait:
                             log.info("Waiting for GameDrive Playnite API to become ready...")
                             logged_wait = True
-                        # Do not restart a healthy Playnite process merely because
-                        # the extension has not finished loading yet. A restart can
-                        # race Playnite's own startup/library initialization.
                         if not playnite._is_running():
                             playnite.start(wait_for_api=False)
                     except Exception:
