@@ -8,8 +8,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
@@ -24,38 +22,21 @@ public class GameDriveLibrary : LibraryPlugin
     private const string LibraryApiPrefix = "http://127.0.0.1:38123/";
     private volatile bool libraryReady;
 
-    public override Guid Id { get; } =
-        Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
-
+    public override Guid Id { get; } = Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
     public override string Name => "GameDrive";
 
-    public GameDriveLibrary(IPlayniteAPI api) : base(api)
-    {
-        this.api = api;
-        // Do not start the HTTP listener from the constructor. Playnite is still
-        // constructing/loading extensions at this point and Database.Games may
-        // not be open yet. Start it from OnApplicationStarted instead.
-    }
+    public GameDriveLibrary(IPlayniteAPI api) : base(api) => this.api = api;
 
     public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
     {
         libraryReady = false;
         StartLibraryApi();
-        logger.Info("GameDrive: Playnite application started; waiting for library database to become ready.");
+        TryUpdateReadyState();
     }
 
     public override void OnLibraryUpdated(OnLibraryUpdatedEventArgs args)
     {
-        libraryReady = true;
-        try
-        {
-            int installed = api.Database.Games.Count(g => g != null && g.IsInstalled);
-            logger.Info($"GameDrive: Playnite library update complete; {installed} installed game(s) available.");
-        }
-        catch (Exception ex)
-        {
-            logger.Warn($"GameDrive: library updated but installed-game count could not be read: {ex.Message}");
-        }
+        TryUpdateReadyState();
     }
 
     public override void OnApplicationStopped(OnApplicationStoppedEventArgs args)
@@ -64,135 +45,75 @@ public class GameDriveLibrary : LibraryPlugin
         StopLibraryApi();
     }
 
+    private void TryUpdateReadyState()
+    {
+        try
+        {
+            bool open = api.Database.IsOpen;
+            int installed = open ? api.Database.Games.Count(g => g != null && g.IsInstalled) : 0;
+            libraryReady = open;
+            logger.Info($"GameDrive: Playnite API ready={libraryReady}, installed games={installed}");
+        }
+        catch (Exception ex)
+        {
+            libraryReady = false;
+            logger.Warn($"GameDrive: Playnite database is not ready: {ex.Message}");
+        }
+    }
+
     public override IEnumerable<GameMetadata> GetGames(LibraryGetGamesArgs args)
     {
         var games = new List<GameMetadata>();
-
-        var drives = DriveInfo.GetDrives().Where(d => d.IsReady).ToList();
-        logger.Info($"GameDrive: scanning {drives.Count} ready drive(s): {string.Join(", ", drives.Select(d => d.Name))}");
-
-        foreach (var drive in drives)
+        foreach (var drive in DriveInfo.GetDrives().Where(d => d.IsReady))
         {
             string iniPath = Path.Combine(drive.RootDirectory.FullName, "GameDrive.ini");
-
-            if (!File.Exists(iniPath))
-            {
-                logger.Info($"GameDrive: no GameDrive.ini on {drive.Name}, skipping.");
-                continue;
-            }
-
-            logger.Info($"GameDrive: found GameDrive.ini on {drive.Name}");
+            if (!File.Exists(iniPath)) continue;
 
             IniData ini;
-            try
-            {
-                var parser = new FileIniDataParser();
-                ini = parser.ReadFile(iniPath);
-            }
-            catch (Exception ex)
-            {
-                logger.Error(ex, $"GameDrive: failed to parse {iniPath}");
-                continue;
-            }
-
-            if (!ini.Sections.ContainsSection("Directories"))
-            {
-                logger.Warn($"GameDrive: {iniPath} has no [Directories] section.");
-                continue;
-            }
-
-            string apiKey = null;
-            if (ini.Sections.ContainsSection("SteamGridDB"))
-                apiKey = ini["SteamGridDB"]["api_key"];
-
-            SteamGridDbClient sgdb = null;
-            if (!string.IsNullOrWhiteSpace(apiKey))
-                sgdb = new SteamGridDbClient(apiKey.Trim(), logger);
-            else
-                logger.Info("GameDrive: SteamGridDB API key is not configured; artwork download is disabled.");
+            try { ini = new FileIniDataParser().ReadFile(iniPath); }
+            catch (Exception ex) { logger.Error(ex, $"GameDrive: failed to parse {iniPath}"); continue; }
+            if (!ini.Sections.ContainsSection("Directories")) continue;
 
             foreach (var key in ini["Directories"])
             {
                 string folder = Path.Combine(drive.RootDirectory.FullName, key.Value);
-
-                if (!Directory.Exists(folder))
-                {
-                    logger.Warn($"GameDrive: directory '{folder}' listed in ini but does not exist.");
-                    continue;
-                }
-
+                if (!Directory.Exists(folder)) continue;
                 foreach (string gameFolder in Directory.GetDirectories(folder))
                 {
                     string name = Path.GetFileName(gameFolder);
                     string exeTxt = Path.Combine(gameFolder, "exepath.txt");
-                    if (!File.Exists(exeTxt))
-                        continue;
-
+                    if (!File.Exists(exeTxt)) continue;
                     string relativeExe;
-                    try
-                    {
-                        relativeExe = File.ReadAllText(exeTxt).Trim();
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.Error(ex, $"GameDrive: could not read {exeTxt}");
-                        continue;
-                    }
-
+                    try { relativeExe = File.ReadAllText(exeTxt).Trim(); }
+                    catch { continue; }
                     string exe = Path.Combine(gameFolder, "Game", relativeExe);
-                    if (!File.Exists(exe))
-                        continue;
-
-                    var metadata = new GameMetadata
+                    if (!File.Exists(exe)) continue;
+                    games.Add(new GameMetadata
                     {
                         Name = name,
                         GameId = name,
                         InstallDirectory = Path.Combine(gameFolder, "Game"),
                         IsInstalled = true,
+                        GameActions = new List<GameAction> { new GameAction { Name = "Play", Type = GameActionType.File, Path = exe, IsPlayAction = true } },
                         Categories = new HashSet<MetadataProperty>()
-                    };
-
-                    metadata.GameActions = new List<GameAction>
-                    {
-                        new GameAction
-                        {
-                            Name = "Play",
-                            Type = GameActionType.File,
-                            Path = exe,
-                            IsPlayAction = true
-                        }
-                    };
-
-                    if (sgdb != null)
-                        EnsureMediaAssets(gameFolder, name, metadata, sgdb, logger);
-                    else
-                        ApplyExistingMedia(gameFolder, metadata);
-
-                    games.Add(metadata);
+                    });
                 }
             }
         }
-
-        logger.Info($"GameDrive: scan complete, {games.Count} game(s) found.");
         return games;
     }
 
     private void StartLibraryApi()
     {
-        if (libraryServer.IsListening)
-            return;
-
+        if (libraryServer.IsListening) return;
         try
         {
+            libraryServer.Prefixes.Clear();
             libraryServer.Prefixes.Add(LibraryApiPrefix);
             libraryServer.Start();
             libraryServerThread = new Thread(LibraryApiLoop) { IsBackground = true, Name = "GameDrive Playnite API" };
             libraryServerThread.Start();
             logger.Info($"GameDrive: Playnite library API listening on {LibraryApiPrefix}");
-        }
-        catch (HttpListenerException ex)
-        {
-            logger.Error(ex, "GameDrive: failed to start Playnite library API. The port may already be in use.");
         }
         catch (Exception ex)
         {
@@ -202,21 +123,9 @@ public class GameDriveLibrary : LibraryPlugin
 
     private void StopLibraryApi()
     {
-        try
-        {
-            if (libraryServer.IsListening)
-                libraryServer.Stop();
-        }
-        catch { }
-
-        try
-        {
-            libraryServer.Close();
-        }
-        catch { }
-
+        try { if (libraryServer.IsListening) libraryServer.Stop(); } catch { }
+        try { libraryServer.Close(); } catch { }
         libraryServerThread = null;
-        logger.Info("GameDrive: Playnite library API stopped.");
     }
 
     private void LibraryApiLoop()
@@ -228,18 +137,7 @@ public class GameDriveLibrary : LibraryPlugin
                 var context = libraryServer.GetContext();
                 ThreadPool.QueueUserWorkItem(_ => HandleLibraryRequest(context));
             }
-            catch (HttpListenerException)
-            {
-                break;
-            }
-            catch (ObjectDisposedException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                logger.Warn($"GameDrive: Playnite API listener error: {ex.Message}");
-            }
+            catch { break; }
         }
     }
 
@@ -247,254 +145,135 @@ public class GameDriveLibrary : LibraryPlugin
     {
         try
         {
+            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
             string path = context.Request.Url.AbsolutePath.TrimEnd('/').ToLowerInvariant();
 
             if (path == "/health")
             {
-                bool databaseOpen = false;
-                int gameCount = 0;
-                int installedCount = 0;
+                int total = 0, installed = 0;
+                bool open = false;
                 try
                 {
-                    databaseOpen = api.Database.IsOpen;
-                    if (databaseOpen)
+                    open = api.Database.IsOpen;
+                    if (open)
                     {
-                        gameCount = api.Database.Games.Count;
-                        installedCount = api.Database.Games.Count(g => g != null && g.IsInstalled);
+                        total = api.Database.Games.Count;
+                        installed = api.Database.Games.Count(g => g != null && g.IsInstalled);
                     }
                 }
-                catch (Exception ex)
-                {
-                    logger.Warn($"GameDrive: health database check failed: {ex.Message}");
-                }
+                catch { open = false; }
 
-                WriteJson(context, new
+                libraryReady = open;
+                WriteJson(context, new Dictionary<string, object>
                 {
-                    ok = true,
-                    source = "PlayniteApi.Database.Games",
-                    ready = libraryReady && databaseOpen,
-                    databaseOpen,
-                    gameCount,
-                    installedCount
+                    ["ok"] = true,
+                    ["ready"] = open,
+                    ["source"] = "PlayniteApi.Database.Games",
+                    ["gameCount"] = total,
+                    ["installedCount"] = installed
                 });
                 return;
             }
 
-            if (path == "/games" && context.Request.HttpMethod == "GET")
+            if (path == "/games")
             {
                 if (!api.Database.IsOpen)
                 {
-                    WriteJson(context, new { ok = false, error = "playnite_database_not_ready" }, 503);
+                    WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "playnite_database_not_ready" }, 503);
                     return;
                 }
 
-                // This is the authoritative Playnite library. The service must not read games.db itself.
-                var games = api.Database.Games
+                var result = api.Database.Games
                     .Where(g => g != null && g.IsInstalled)
-                    .Select(ToLibraryGame)
+                    .Select(ToApiGame)
                     .ToList();
-
-                WriteJson(context, games);
+                WriteJson(context, result);
                 return;
             }
 
-            WriteJson(context, new { ok = false, error = "not_found" }, 404);
+            const string launchPrefix = "/games/";
+            const string launchSuffix = "/launch";
+            if (path.StartsWith(launchPrefix) && path.EndsWith(launchSuffix))
+            {
+                string idText = path.Substring(launchPrefix.Length, path.Length - launchPrefix.Length - launchSuffix.Length);
+                if (!Guid.TryParse(idText, out Guid id))
+                {
+                    WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "invalid_playnite_id" }, 400);
+                    return;
+                }
+
+                var game = api.Database.Games.FirstOrDefault(g => g != null && g.Id == id && g.IsInstalled);
+                if (game == null)
+                {
+                    WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "game_not_found" }, 404);
+                    return;
+                }
+
+                var action = game.GameActions?.FirstOrDefault(a => a != null && a.IsPlayAction) ?? game.GameActions?.FirstOrDefault();
+                if (action == null)
+                {
+                    WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "no_game_action" }, 409);
+                    return;
+                }
+
+                try
+                {
+                    api.StartGame(game.Id);
+                    WriteJson(context, new Dictionary<string, object> { ["ok"] = true, ["playniteId"] = game.Id.ToString() });
+                }
+                catch (Exception ex)
+                {
+                    logger.Error(ex, $"GameDrive: failed to launch Playnite game {game.Id}");
+                    WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "launch_failed", ["detail"] = ex.Message }, 500);
+                }
+                return;
+            }
+
+            WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "not_found" }, 404);
         }
         catch (Exception ex)
         {
-            logger.Error(ex, "GameDrive: Playnite library API request failed.");
-            try
-            {
-                WriteJson(context, new { ok = false, error = ex.Message }, 500);
-            }
-            catch { }
+            logger.Warn($"GameDrive: API request failed: {ex.Message}");
+            try { WriteJson(context, new Dictionary<string, object> { ["ok"] = false, ["error"] = "internal_error" }, 500); } catch { }
         }
     }
 
-    private object ToLibraryGame(Game game)
+    private Dictionary<string, object> ToApiGame(Game game)
     {
-        GameAction action = null;
-        if (game.GameActions != null)
-            action = game.GameActions.FirstOrDefault(a => a != null && a.IsPlayAction) ?? game.GameActions.FirstOrDefault();
-
-        return new
+        var action = game.GameActions?.FirstOrDefault(a => a != null && a.IsPlayAction) ?? game.GameActions?.FirstOrDefault();
+        return new Dictionary<string, object>
         {
-            id = game.Id,
-            name = game.Name,
-            gameId = game.GameId,
-            sourceId = game.SourceId,
-            isInstalled = game.IsInstalled,
-            installDirectory = game.InstallDirectory,
-            executable = action?.Path,
-            arguments = action?.Arguments,
-            workingDirectory = action?.WorkingDir,
-            description = game.Description,
-            releaseDate = game.ReleaseDate,
-            playtime = game.Playtime
+            ["id"] = game.Id.ToString(),
+            ["name"] = game.Name ?? "Unknown Game",
+            ["gameId"] = game.GameId,
+            ["sourceId"] = game.SourceId,
+            ["isInstalled"] = game.IsInstalled,
+            ["installDirectory"] = game.InstallDirectory,
+            ["executable"] = action?.Path,
+            ["arguments"] = action?.Arguments,
+            ["workingDirectory"] = action?.WorkingDir,
+            ["description"] = game.Description,
+            ["releaseDate"] = game.ReleaseDate,
+            ["playtime"] = game.Playtime,
+            ["cover"] = game.CoverImage,
+            ["hero"] = game.BackgroundImage,
+            ["logo"] = game.Icon,
         };
     }
 
     private void WriteJson(HttpListenerContext context, object value, int statusCode = 200)
     {
-        byte[] bytes;
+        string json;
         var serializer = new DataContractJsonSerializer(value.GetType());
         using (var ms = new MemoryStream())
         {
             serializer.WriteObject(ms, value);
-            bytes = ms.ToArray();
+            json = Encoding.UTF8.GetString(ms.ToArray());
         }
-
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
         context.Response.StatusCode = statusCode;
         context.Response.ContentType = "application/json; charset=utf-8";
         context.Response.ContentLength64 = bytes.Length;
-        context.Response.OutputStream.Write(bytes, 0, bytes.Length);
-        context.Response.OutputStream.Close();
+        using (var stream = context.Response.OutputStream) stream.Write(bytes, 0, bytes.Length);
     }
-
-    private void EnsureMediaAssets(string gameFolder, string gameName, GameMetadata metadata, SteamGridDbClient sgdb, ILogger logger)
-    {
-        string capsulePath = Path.Combine(gameFolder, "Capsule.png");
-        string heroPath = Path.Combine(gameFolder, "Hero.png");
-        string iconPath = Path.Combine(gameFolder, "Icon.png");
-        bool needCapsule = !File.Exists(capsulePath);
-        bool needHero = !File.Exists(heroPath);
-        bool needIcon = !File.Exists(iconPath);
-        int? gameId = null;
-
-        if (needCapsule || needHero || needIcon)
-        {
-            try { gameId = sgdb.SearchGameId(gameName); }
-            catch (Exception ex) { logger.Warn($"GameDrive: SteamGridDB search failed for '{gameName}': {ex.Message}"); }
-
-            if (gameId != null)
-            {
-                if (needCapsule) TryDownload(sgdb, "grids", gameId.Value, "600x900", capsulePath, logger, "capsule");
-                if (needHero) TryDownload(sgdb, "heroes", gameId.Value, "1920x620", heroPath, logger, "hero/background");
-                if (needIcon) TryDownload(sgdb, "icons", gameId.Value, null, iconPath, logger, "icon");
-            }
-        }
-
-        ApplyExistingMedia(gameFolder, metadata);
-    }
-
-    private void ApplyExistingMedia(string gameFolder, GameMetadata metadata)
-    {
-        string capsulePath = Path.Combine(gameFolder, "Capsule.png");
-        string heroPath = Path.Combine(gameFolder, "Hero.png");
-        string iconPath = Path.Combine(gameFolder, "Icon.png");
-        if (File.Exists(capsulePath)) metadata.CoverImage = new MetadataFile(capsulePath);
-        if (File.Exists(heroPath)) metadata.BackgroundImage = new MetadataFile(heroPath);
-        if (File.Exists(iconPath)) metadata.Icon = new MetadataFile(iconPath);
-    }
-
-    private void TryDownload(SteamGridDbClient sgdb, string category, int gameId, string dimensions, string destPath, ILogger logger, string label)
-    {
-        try
-        {
-            string url = sgdb.GetImageUrl(category, gameId, dimensions);
-            if (string.IsNullOrWhiteSpace(url)) return;
-            sgdb.DownloadFile(url, destPath);
-        }
-        catch (Exception ex)
-        {
-            logger.Warn($"GameDrive: failed to download {label} for game id {gameId}: {ex.Message}");
-        }
-    }
-}
-
-public class SteamGridDbClient
-{
-    private static readonly HttpClient http = CreateHttpClient();
-    private readonly string apiKey;
-    private readonly ILogger logger;
-
-    public SteamGridDbClient(string apiKey, ILogger logger) { this.apiKey = apiKey; this.logger = logger; }
-
-    private static HttpClient CreateHttpClient()
-    {
-        var client = new HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(20);
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("GameDrive/1.0");
-        return client;
-    }
-
-    private HttpRequestMessage BuildRequest(string url)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-        return request;
-    }
-
-    private T SendAndParse<T>(string url)
-    {
-        using (var request = BuildRequest(url))
-        using (var response = http.SendAsync(request).GetAwaiter().GetResult())
-        {
-            response.EnsureSuccessStatusCode();
-            using (var stream = response.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
-            {
-                var serializer = new DataContractJsonSerializer(typeof(T));
-                return (T)serializer.ReadObject(stream);
-            }
-        }
-    }
-
-    public int? SearchGameId(string gameName)
-    {
-        string url = "https://www.steamgriddb.com/api/v2/search/autocomplete/" + Uri.EscapeDataString(gameName);
-        var result = SendAndParse<SgdbListResponse<SgdbGame>>(url);
-        if (result?.Data == null || result.Data.Count == 0) return null;
-        var exact = result.Data.FirstOrDefault(x => string.Equals(Normalize(x.Name), Normalize(gameName), StringComparison.OrdinalIgnoreCase));
-        return (exact ?? result.Data[0]).Id;
-    }
-
-    private static string Normalize(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-        return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-    }
-
-    public string GetImageUrl(string category, int gameId, string dimensions)
-    {
-        string url = $"https://www.steamgriddb.com/api/v2/{category}/game/{gameId}?mimes=image/png";
-        if (!string.IsNullOrEmpty(dimensions)) url += "&dimensions=" + Uri.EscapeDataString(dimensions);
-        var result = SendAndParse<SgdbListResponse<SgdbImage>>(url);
-        return result?.Data != null && result.Data.Count > 0 ? result.Data[0].Url : null;
-    }
-
-    public void DownloadFile(string url, string destPath)
-    {
-        using (var response = http.GetAsync(url).GetAwaiter().GetResult())
-        {
-            response.EnsureSuccessStatusCode();
-            var bytes = response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
-            string directory = Path.GetDirectoryName(destPath);
-            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-            string tempPath = destPath + ".tmp";
-            File.WriteAllBytes(tempPath, bytes);
-            if (File.Exists(destPath)) File.Delete(destPath);
-            File.Move(tempPath, destPath);
-        }
-    }
-}
-
-[DataContract]
-public class SgdbListResponse<T>
-{
-    [DataMember(Name = "success")] public bool Success { get; set; }
-    [DataMember(Name = "data")] public List<T> Data { get; set; }
-}
-
-[DataContract]
-public class SgdbGame
-{
-    [DataMember(Name = "id")] public int Id { get; set; }
-    [DataMember(Name = "name")] public string Name { get; set; }
-}
-
-[DataContract]
-public class SgdbImage
-{
-    [DataMember(Name = "id")] public int Id { get; set; }
-    [DataMember(Name = "url")] public string Url { get; set; }
 }
