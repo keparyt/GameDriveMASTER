@@ -1,35 +1,25 @@
-﻿
-updateDevicesPanelVisibilit
-updateDevicesPanelVisibility();y();const grid=document.querySelector("#grid"),search=document.querySelector("#search"),online=document.querySelector("#online"),errorBox=document.querySelector("#error"),drivesBox=document.querySelector("#drives"),driveCount=document.querySelector("#drive-count"),modal=document.querySelector("#game-modal"),detailHero=document.querySelector("#detail-hero"),detailLogo=document.querySelector("#detail-logo"),detailTitle=document.querySelector("#detail-title"),detailMeta=document.querySelector("#detail-meta"),detailSource=document.querySelector("#detail-source"),detailDescription=document.querySelector("#detail-description"),detailTrailer=document.querySelector("#detail-trailer"),trailerSection=document.querySelector("#trailer-section"),launchButton=document.querySelector("#launch-game"),launchStatus=document.querySelector("#launch-status"),headerTime=document.querySelector("#header-time"),libraryTitle=document.querySelector("#library-title"),libraryKicker=document.querySelector("#library-kicker");
+﻿const grid=document.querySelector("#grid"),search=document.querySelector("#search"),online=document.querySelector("#online"),errorBox=document.querySelector("#error"),drivesBox=document.querySelector("#drives"),driveCount=document.querySelector("#drive-count"),modal=document.querySelector("#game-modal"),detailHero=document.querySelector("#detail-hero"),detailLogo=document.querySelector("#detail-logo"),detailTitle=document.querySelector("#detail-title"),detailMeta=document.querySelector("#detail-meta"),detailSource=document.querySelector("#detail-source"),detailDescription=document.querySelector("#detail-description"),detailTrailer=document.querySelector("#detail-trailer"),trailerSection=document.querySelector("#trailer-section"),launchButton=document.querySelector("#launch-game"),launchStatus=document.querySelector("#launch-status"),headerTime=document.querySelector("#header-time"),libraryTitle=document.querySelector("#library-title"),libraryKicker=document.querySelector("#library-kicker");
 let selectedGameId=null,previousDriveState=null,drivePollTimer=null,artworkPollTimer=null,currentGamesSignature=null,currentDrivesSignature=null,gamesRequest=0,drivesRequest=0,artworkRequest=0,gamesBusy=false,drivesBusy=false,currentView="drives";
 const escapeHtml=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const showError=m=>{errorBox.textContent=m;errorBox.style.display="block"},hideError=()=>{errorBox.textContent="";errorBox.style.display="none"};
 function formatBytes(bytes){let n=Number(bytes||0),u=["B","GB","TB","PB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n?`${n>=10||i===0?Math.round(n):n.toFixed(1)} ${u[i]}`:"â€”"}
 function driveState(ds){return ds.map(d=>`${d.uuid||d.id}:${Boolean(d.connected)}`).sort().join("|")}
 
+function updateDevicesPanelVisibility() {
+    const panel =
+        document.querySelector("#devices-panel") ||
+        document.querySelector("#drives-box") ||
+        document.querySelector("#drives");
 
+    if (!panel) return;
+
+    panel.hidden = currentView !== "drives";
+}
 function gameQuery(){return new URLSearchParams({q:search.value.trim(),connected_only:currentView==="apps"?false:online.checked,mode:currentView})}
 function gameSignature(ds){return JSON.stringify(ds.map(g=>({id:g.unified_id||g.id,title:g.title,name:g.name,connected:Boolean(g.connected),drive_name:g.drive_name,last_letter:g.last_letter,cover:g.cover,capsule:g.capsule,logo:g.logo,source:g.source,category:g.category,playnite_id:g.playnite_id,playnite_managed:g.playnite_managed,installation_state:g.installation_state})).sort((a,b)=>String(a.id).localeCompare(String(b.id))))}
 function driveSignature(ds,hw){return JSON.stringify({ds:ds.map(d=>({id:d.uuid||d.id,name:d.name,connected:Boolean(d.connected),last_letter:d.last_letter,description:d.description})),hw:hw.map(d=>({id:d.id||d.name,name:d.name,serial:d.serial,status:d.status,offline:d.offline,bus:d.bus,size:d.size,health:d.health,partitions:d.partitions}))})}
 function showDriveNotification(name,connected){const toast=document.querySelector("#drive-notification");toast.className=`drive-notification ${connected?"is-connected":"is-disconnected"}`;toast.innerHTML=`<span class="drive-notification-icon">${connected?"âœ“":"!"}</span><span><strong>${escapeHtml(name||"GameDrive")}</strong><small>${connected?"Drive connected":"Drive disconnected"}</small></span>`;requestAnimationFrame(()=>toast.classList.add("show"));clearTimeout(toast._hideTimer);toast._hideTimer=setTimeout(()=>toast.classList.remove("show"),4500)}
 function createDriveCard(d){const c=Boolean(d.connected),letter=d.last_letter?`${d.last_letter}:`:"â€”";return `<div class="drive-chip ${c?"connected":"disconnected"}" title="${escapeHtml(d.description||"")}"><span class="drive-dot"></span><div class="drive-chip-info"><strong>${escapeHtml(d.name||"Unnamed GameDrive")}</strong><small>${escapeHtml(letter)} Â· ${c?"GameDrive loaded":"Offline"}</small><small>${escapeHtml(d.description||"")}</small></div></div>`}
-function updateDevicesPanelVisibility() {
-
-    const panel =
-        document.querySelector("#devices-panel") ||
-        document.querySelector("#drives-box");
-
-    if (!panel) {
-        return;
-    }
-
-    // Only show the hardware/device list on the Drives page.
-    const drivesView =
-        currentView === "drives" ||
-        currentView === "drive";
-
-    panel.hidden = !drivesView;
-}
 function createPartitionRow(p) {
     const loaded = Boolean(p.gamedrive_loaded);
 
@@ -48,27 +38,6 @@ function createPartitionRow(p) {
     `;
 }
 
-function formatDriveCapacity(value) {
-    const bytes = Number(value);
-
-    if (!Number.isFinite(bytes) || bytes <= 0) {
-        return "Unknown size";
-    }
-
-    const units = ["B", "KB", "MB", "GB", "TB"];
-
-    let size = bytes;
-    let unit = 0;
-
-    while (size >= 1024 && unit < units.length - 1) {
-        size /= 1024;
-        unit++;
-    }
-
-    const decimals = unit >= 3 ? 1 : 0;
-
-    return `${size.toFixed(decimals)} ${units[unit]}`;
-}
 function createHardwareCard(d) {
     const connected =
         !d.offline &&
@@ -129,4 +98,3 @@ updateDevicesPanelVisibility();document.querySelectorAll("[data-library-view]").
 document.querySelectorAll("[data-library-view]").forEach(b=>b.addEventListener("click",()=>setLibraryView(b.dataset.libraryView)));
 setInterval(()=>{headerTime.textContent=new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit"}).format(new Date())},1000);let searchTimer=null;search.addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{currentGamesSignature=null;loadGames()},180)});online.addEventListener("change",()=>{currentGamesSignature=null;loadGames()});
 async function load(){hideError();try{await Promise.all([loadDrives({initial:true}),loadGames({initial:true})]);clearInterval(drivePollTimer);drivePollTimer=setInterval(()=>loadDrives(),5000);clearInterval(artworkPollTimer);artworkPollTimer=setInterval(refreshArtwork,3000)}catch(e){console.error(e);showError("Unable to load the complete Game Library.")}}load();
-
