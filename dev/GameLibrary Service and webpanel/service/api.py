@@ -14,6 +14,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from .playnite import PlayniteBridge
+from .apps import scan_apps, find_app
 
 BASE_DIR=Path(__file__).resolve().parent.parent
 WEB_DIR=BASE_DIR/"web"
@@ -78,25 +79,20 @@ def _matches(gd,pn):
     return bool(install and _norm(gd.get("title") or gd.get("name"))==_norm(pn.get("name")) and _inside(install,root))
 
 def _media_file_path(value, base_paths=()):
-    """Resolve Playnite local artwork paths, including Windows file:// and relative paths."""
     if not value:return None
     value=str(value).strip()
     if not value:return None
     if value.startswith("file://"):
         parsed=urllib.parse.urlparse(value)
-        if parsed.netloc:
-            value=f"\\\\{parsed.netloc}{urllib.parse.unquote(parsed.path)}"
+        if parsed.netloc:value=f"\\\\{parsed.netloc}{urllib.parse.unquote(parsed.path)}"
         else:
             value=urllib.parse.unquote(parsed.path)
             if len(value)>=3 and value.startswith("/") and value[2]==":": value=value[1:]
-    value=os.path.expandvars(os.path.expanduser(value))
-    p=Path(value)
-    candidates=[]
-    if p.is_absolute():
-        candidates.append(p)
+    value=os.path.expandvars(os.path.expanduser(value)); p=Path(value); candidates=[]
+    if p.is_absolute(): candidates.append(p)
     else:
         for base in base_paths:
-            if base: candidates.append(Path(base)/p)
+            if base:candidates.append(Path(base)/p)
         candidates.append(Path.cwd()/p)
     for candidate in candidates:
         try:
@@ -106,7 +102,7 @@ def _media_file_path(value, base_paths=()):
     return None
 
 def create_app(db,metadata=None,config=None,playnite=None):
-    app=FastAPI(title="Game Library API",version="1.1.0")
+    app=FastAPI(title="Game Library API",version="1.2.0")
     app.add_middleware(CORSMiddleware,allow_origins=["http://127.0.0.1","http://localhost"],allow_methods=["GET","POST"],allow_headers=["*"])
     playnite=playnite or PlayniteBridge((config or {}).get("playnite",{}))
     def p_games(): return playnite.read_games()
@@ -135,8 +131,13 @@ def create_app(db,metadata=None,config=None,playnite=None):
                 x=dict(p);x.update({"id":None,"unified_id":"pn:"+str(p["playnite_id"]),"source":"playnite","playnite_managed":True,"playnite_id":p["playnite_id"],"title":p["name"],"connected":True,"last_letter":Path(p["install_directory"]).drive.rstrip(":") if p.get("install_directory") else None,"drive_name":"Playnite","installation_state":"Installed","launch_source":"Playnite"})
                 for k in ("cover","capsule","hero","logo"):x[k]=media(p["playnite_id"],k,x.get(k))
                 out.append(x)
+        if mode=="apps":
+            out=[a for a in scan_apps() if not q or _norm(q) in _norm(a["name"])]
         return sorted(out,key=lambda x:str(x.get("title") or x.get("name") or "").lower())
-    def find(uid):return next((x for x in library() if x["unified_id"]==uid),None)
+    def find(uid):
+        item=next((x for x in library() if x["unified_id"]==uid),None)
+        if item:return item
+        return next((x for x in scan_apps() if x["unified_id"]==uid),None)
     @app.get("/",response_class=HTMLResponse)
     def index():return (WEB_DIR/"index.html").read_text(encoding="utf-8")
     for route,file,ctype in [("/style.css","style.css","text/css"),("/theme.css","theme.css","text/css"),("/network.css","network.css","text/css"),("/app.js","app.js","application/javascript"),("/network.js","network.js","application/javascript")]:app.add_api_route(route,lambda f=file,c=ctype:FileResponse(WEB_DIR/f,media_type=c),methods=["GET"])
@@ -158,19 +159,18 @@ def create_app(db,metadata=None,config=None,playnite=None):
                 return Response(data,media_type=ctype,headers={"Cache-Control":"public, max-age=86400"})
             except Exception:return {"error":"media_unavailable"}
         appdata=Path(os.environ.get("APPDATA","") ) if os.environ.get("APPDATA") else None
-        bases=[playnite.library_path, playnite.library_path.parent if playnite.library_path else None, playnite.playnite_path.parent if playnite.playnite_path else None, appdata/"Playnite" if appdata else None]
+        bases=[playnite.library_path,playnite.library_path.parent if playnite.library_path else None,playnite.playnite_path.parent if playnite.playnite_path else None,appdata/"Playnite" if appdata else None]
         path=_media_file_path(value,bases)
         if path:
             allowed=[]
             for root in bases:
                 if root:
-                    try: allowed.append(Path(root).resolve())
-                    except Exception: pass
-            if any(root==path or root in path.parents for root in allowed):
-                return FileResponse(path)
+                    try:allowed.append(Path(root).resolve())
+                    except Exception:pass
+            if any(root==path or root in path.parents for root in allowed):return FileResponse(path)
         return {"error":"not_found"}
     @app.get("/api/health")
-    def health():return {"ok":True,"service":"GameLibrary","playnite":playnite.status,"metadata_enabled":bool(metadata and metadata.enabled)}
+    def health():return {"ok":True,"service":"GameLibrary","playnite":playnite.status,"apps_count":len(scan_apps()),"metadata_enabled":bool(metadata and metadata.enabled)}
     @app.get("/api/network")
     def network():host,port=_local_ip(),int((config or {}).get("api_port",8765));return {"ip":host,"port":port,"url":f"http://{host}:{port}/","playnite_configured":bool(playnite.playnite_path)}
     @app.get("/api/network/qr")
@@ -188,8 +188,12 @@ def create_app(db,metadata=None,config=None,playnite=None):
         return [dict(x) for x in r]
     @app.get("/api/system/disks")
     def disks():return _physical_disks()
+    @app.get("/api/apps")
+    def apps(q:str=Query("",max_length=200)):return [a for a in scan_apps() if not q or _norm(q) in _norm(a["name"])]
     @app.get("/api/games")
-    def games(q:str=Query("",max_length=200),connected_only:bool=False,mode:str="playlist"):return library(q,connected_only,mode if mode in ("playlist","drives") else "playlist")
+    def games(q:str=Query("",max_length=200),connected_only:bool=False,mode:str="playlist"):
+        mode=mode if mode in ("playlist","drives","apps") else "playlist"
+        return library(q,connected_only,mode)
     @app.get("/api/games/{game_id}")
     def game(game_id:str):return find(game_id) or {"error":"not_found"}
     @app.get("/api/games/{game_id}/details")
@@ -198,6 +202,10 @@ def create_app(db,metadata=None,config=None,playnite=None):
         if not x:return {"error":"not_found"}
         result=dict(x)
         if result.get("playnite_id"):result["playnite_uri"]=playnite.uri(result["playnite_id"])
+        if result.get("source")=="apps":
+            result["description"]="Local GameDrive application"
+            result["launch_source"]="GameDrive Apps"
+            return result
         try:
             steam=_steam_details(result["app_id"]) if result.get("app_id") else _steam_search(result.get("title") or result.get("name"))
             result.update({k:v for k,v in steam.items() if v and not result.get(k)})
@@ -208,6 +216,13 @@ def create_app(db,metadata=None,config=None,playnite=None):
     def launch(game_id:str):
         x=find(game_id)
         if not x:return {"ok":False,"error":"not_found"}
+        if x.get("source")=="apps":
+            app=find_app(x.get("app_id"))
+            if not app:return {"ok":False,"error":"app_not_found"}
+            try:
+                subprocess.Popen([app["executable"]],cwd=app["working_directory"],creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+                return {"ok":True,"path":app["executable"]}
+            except Exception as e:return {"ok":False,"error":"app_launch_failed","detail":str(e)}
         if x.get("playnite_id"):return playnite.launch(x["playnite_id"])
         if not x.get("connected") or not x.get("last_letter"):return {"ok":False,"error":"drive_offline"}
         root=Path(f"{x['last_letter']}:\\");folder=(root/x["relative_path"]).resolve();game_dir=(folder/"Game").resolve();ef=(folder/"exepath.txt").resolve()
