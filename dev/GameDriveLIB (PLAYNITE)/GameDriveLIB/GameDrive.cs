@@ -15,6 +15,52 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 
+[DataContract]
+public sealed class GameDriveHealthResponse
+{
+    [DataMember(Name = "ok")] public bool Ok { get; set; }
+    [DataMember(Name = "ready")] public bool Ready { get; set; }
+    [DataMember(Name = "source")] public string Source { get; set; }
+    [DataMember(Name = "gameCount")] public int GameCount { get; set; }
+    [DataMember(Name = "installedCount")] public int InstalledCount { get; set; }
+}
+
+[DataContract]
+public sealed class GameDriveApiGame
+{
+    [DataMember(Name = "id")] public string Id { get; set; }
+    [DataMember(Name = "name")] public string Name { get; set; }
+    [DataMember(Name = "gameId")] public string GameId { get; set; }
+    [DataMember(Name = "sourceId")] public string SourceId { get; set; }
+    [DataMember(Name = "isInstalled")] public bool IsInstalled { get; set; }
+    [DataMember(Name = "installDirectory")] public string InstallDirectory { get; set; }
+    [DataMember(Name = "executable")] public string Executable { get; set; }
+    [DataMember(Name = "arguments")] public string Arguments { get; set; }
+    [DataMember(Name = "workingDirectory")] public string WorkingDirectory { get; set; }
+    [DataMember(Name = "description")] public string Description { get; set; }
+    [DataMember(Name = "releaseDate")] public string ReleaseDate { get; set; }
+    [DataMember(Name = "playtime")] public long Playtime { get; set; }
+    [DataMember(Name = "cover")] public string Cover { get; set; }
+    [DataMember(Name = "hero")] public string Hero { get; set; }
+    [DataMember(Name = "logo")] public string Logo { get; set; }
+}
+
+[DataContract]
+public sealed class GameDriveLaunchResponse
+{
+    [DataMember(Name = "ok")] public bool Ok { get; set; }
+    [DataMember(Name = "playniteId", EmitDefaultValue = false)] public string PlayniteId { get; set; }
+    [DataMember(Name = "error", EmitDefaultValue = false)] public string Error { get; set; }
+    [DataMember(Name = "detail", EmitDefaultValue = false)] public string Detail { get; set; }
+}
+
+[DataContract]
+public sealed class GameDriveErrorResponse
+{
+    [DataMember(Name = "ok")] public bool Ok { get; set; }
+    [DataMember(Name = "error")] public string Error { get; set; }
+}
+
 public class GameDriveLibrary : LibraryPlugin
 {
     private readonly IPlayniteAPI api;
@@ -36,10 +82,7 @@ public class GameDriveLibrary : LibraryPlugin
         TryUpdateReadyState();
     }
 
-    public override void OnLibraryUpdated(OnLibraryUpdatedEventArgs args)
-    {
-        TryUpdateReadyState();
-    }
+    public override void OnLibraryUpdated(OnLibraryUpdatedEventArgs args) => TryUpdateReadyState();
 
     public override void OnApplicationStopped(OnApplicationStoppedEventArgs args)
     {
@@ -147,8 +190,8 @@ public class GameDriveLibrary : LibraryPlugin
         {
             try
             {
-                stream.ReadTimeout = 3000;
-                stream.WriteTimeout = 3000;
+                stream.ReadTimeout = 5000;
+                stream.WriteTimeout = 5000;
                 string request = ReadHttpRequest(stream);
                 if (string.IsNullOrEmpty(request)) return;
                 string firstLine = request.Split(new[] { "\r\n" }, StringSplitOptions.None)[0];
@@ -199,13 +242,13 @@ public class GameDriveLibrary : LibraryPlugin
                 }
                 catch { open = false; }
                 libraryReady = open;
-                WriteJson(stream, new Dictionary<string, object>
+                WriteJson(stream, new GameDriveHealthResponse
                 {
-                    ["ok"] = true,
-                    ["ready"] = open,
-                    ["source"] = "PlayniteApi.Database.Games",
-                    ["gameCount"] = total,
-                    ["installedCount"] = installed
+                    Ok = true,
+                    Ready = open,
+                    Source = "PlayniteApi.Database.Games",
+                    GameCount = total,
+                    InstalledCount = installed
                 }, 200);
                 return;
             }
@@ -214,10 +257,16 @@ public class GameDriveLibrary : LibraryPlugin
             {
                 if (!api.Database.IsOpen)
                 {
-                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "playnite_database_not_ready" }, 503);
+                    WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "playnite_database_not_ready" }, 503);
                     return;
                 }
-                var result = api.Database.Games.Where(g => g != null && g.IsInstalled).Select(ToApiGame).ToList();
+
+                var result = api.Database.Games
+                    .Where(g => g != null && g.IsInstalled)
+                    .Select(ToApiGame)
+                    .ToList();
+
+                logger.Info($"GameDrive: serving {result.Count} installed Playnite game(s) through /games");
                 WriteJson(stream, result, 200);
                 return;
             }
@@ -230,57 +279,59 @@ public class GameDriveLibrary : LibraryPlugin
                 Guid id;
                 if (!Guid.TryParse(idText, out id))
                 {
-                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "invalid_playnite_id" }, 400);
+                    WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "invalid_playnite_id" }, 400);
                     return;
                 }
+
                 var game = api.Database.Games.FirstOrDefault(g => g != null && g.Id == id && g.IsInstalled);
                 if (game == null)
                 {
-                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "game_not_found" }, 404);
+                    WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "game_not_found" }, 404);
                     return;
                 }
+
                 try
                 {
                     api.StartGame(game.Id);
-                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = true, ["playniteId"] = game.Id.ToString() }, 200);
+                    WriteJson(stream, new GameDriveLaunchResponse { Ok = true, PlayniteId = game.Id.ToString() }, 200);
                 }
                 catch (Exception ex)
                 {
                     logger.Error(ex, $"GameDrive: failed to launch Playnite game {game.Id}");
-                    WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "launch_failed", ["detail"] = ex.Message }, 500);
+                    WriteJson(stream, new GameDriveLaunchResponse { Ok = false, Error = "launch_failed", Detail = ex.Message }, 500);
                 }
                 return;
             }
 
-            WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "not_found" }, 404);
+            WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "not_found" }, 404);
         }
         catch (Exception ex)
         {
             logger.Warn($"GameDrive: API request failed: {ex.Message}");
-            try { WriteJson(stream, new Dictionary<string, object> { ["ok"] = false, ["error"] = "internal_error" }, 500); } catch { }
+            try { WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "internal_error" }, 500); } catch { }
         }
     }
 
-    private Dictionary<string, object> ToApiGame(Game game)
+    private GameDriveApiGame ToApiGame(Game game)
     {
         var action = game.GameActions?.FirstOrDefault(a => a != null && a.IsPlayAction) ?? game.GameActions?.FirstOrDefault();
-        return new Dictionary<string, object>
+        return new GameDriveApiGame
         {
-            ["id"] = game.Id.ToString(),
-            ["name"] = game.Name ?? "Unknown Game",
-            ["gameId"] = game.GameId,
-            ["sourceId"] = game.SourceId,
-            ["isInstalled"] = game.IsInstalled,
-            ["installDirectory"] = game.InstallDirectory,
-            ["executable"] = action?.Path,
-            ["arguments"] = action?.Arguments,
-            ["workingDirectory"] = action?.WorkingDir,
-            ["description"] = game.Description,
-            ["releaseDate"] = game.ReleaseDate,
-            ["playtime"] = game.Playtime,
-            ["cover"] = game.CoverImage,
-            ["hero"] = game.BackgroundImage,
-            ["logo"] = game.Icon
+            Id = game.Id.ToString(),
+            Name = game.Name ?? "Unknown Game",
+            GameId = game.GameId == null ? null : game.GameId.ToString(),
+            SourceId = game.SourceId == null ? null : game.SourceId.ToString(),
+            IsInstalled = game.IsInstalled,
+            InstallDirectory = game.InstallDirectory == null ? null : game.InstallDirectory.ToString(),
+            Executable = action?.Path == null ? null : action.Path.ToString(),
+            Arguments = action?.Arguments == null ? null : action.Arguments.ToString(),
+            WorkingDirectory = action?.WorkingDir == null ? null : action.WorkingDir.ToString(),
+            Description = game.Description,
+            ReleaseDate = game.ReleaseDate.HasValue ? game.ReleaseDate.Value.ToString("o") : null,
+            Playtime = game.Playtime,
+            Cover = game.CoverImage,
+            Hero = game.BackgroundImage,
+            Logo = game.Icon
         };
     }
 
@@ -293,8 +344,9 @@ public class GameDriveLibrary : LibraryPlugin
             serializer.WriteObject(ms, value);
             json = Encoding.UTF8.GetString(ms.ToArray());
         }
+
         byte[] body = Encoding.UTF8.GetBytes(json);
-        string status = statusCode == 200 ? "OK" : statusCode == 400 ? "Bad Request" : statusCode == 404 ? "Not Found" : statusCode == 409 ? "Conflict" : "Service Unavailable";
+        string status = statusCode == 200 ? "OK" : statusCode == 400 ? "Bad Request" : statusCode == 404 ? "Not Found" : statusCode == 409 ? "Conflict" : statusCode == 500 ? "Internal Server Error" : "Service Unavailable";
         string header = "HTTP/1.1 " + statusCode + " " + status + "\r\n" +
                         "Content-Type: application/json; charset=utf-8\r\n" +
                         "Content-Length: " + body.Length + "\r\n" +
