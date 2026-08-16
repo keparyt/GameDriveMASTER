@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import shlex
+import sys
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 APPS_DIR = BASE_DIR / "apps"
@@ -14,6 +15,21 @@ def _read_text(path):
             return path.read_text(errors="ignore").strip()
         except Exception:
             return ""
+
+
+def _script_command(script, arguments):
+    ext = script.suffix.lower()
+    if ext == ".ps1":
+        powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        return powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *arguments]
+    if ext in {".cmd", ".bat"}:
+        return Path(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")), ["/d", "/c", str(script), *arguments]
+    if ext == ".vbs":
+        wscript = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wscript.exe"
+        return wscript, [str(script), *arguments]
+    if ext == ".py":
+        return Path(sys.executable), [str(script), *arguments]
+    return script, arguments
 
 
 def _resolve_app_executable(app_folder, game_dir, text):
@@ -35,8 +51,9 @@ def _resolve_app_executable(app_folder, game_dir, text):
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
-            if (app_root == resolved or app_root in resolved.parents) and resolved.is_file():
-                return resolved, tokens[1:]
+            if not (app_root == resolved or app_root in resolved.parents) or not resolved.is_file():
+                continue
+            return _script_command(resolved, tokens[1:])
         except (OSError, ValueError):
             continue
     return None, []
@@ -69,8 +86,6 @@ def scan_apps(root=None):
         cover_file = _find_image(folder, ("Capsule.jpg", "Capsule.jpeg", "Capsule.png", "Capsule.webp"))
         hero_file = _find_image(folder, ("Hero.jpg", "Hero.jpeg", "Hero.png", "Hero.webp", "Background.jpg", "Background.jpeg", "Background.png", "Background.webp"))
         icon_file = _find_image(folder, ("Icon.png", "Icon.jpg", "Icon.jpeg", "Icon.webp", "Capsule.png", "Capsule.jpg", "Capsule.jpeg", "Capsule.webp"))
-        # Return browser-safe API URLs rather than Windows filesystem paths.
-        # This makes both cards and detail heroes work on the web panel.
         media = lambda kind, present: f"/api/apps/media/{__import__('urllib.parse', fromlist=['quote']).quote(folder.name, safe='')}/{kind}" if present else None
         cover = media("cover", cover_file)
         capsule = media("capsule", cover_file)
