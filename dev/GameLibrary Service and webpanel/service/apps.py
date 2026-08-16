@@ -66,9 +66,17 @@ def scan_apps(root=None):
         if not exepath.is_file():
             continue
         executable, arguments = _resolve_app_executable(folder, game_dir, _read_text(exepath))
-        cover = _find_image(folder, ("Capsule.jpg", "Capsule.jpeg", "Capsule.png", "Capsule.webp"))
-        hero = _find_image(folder, ("Hero.jpg", "Hero.jpeg", "Hero.png", "Hero.webp", "Background.jpg", "Background.jpeg", "Background.png", "Background.webp"))
-        icon = _find_image(folder, ("Icon.png", "Icon.jpg", "Icon.jpeg", "Icon.webp", "Capsule.png", "Capsule.jpg", "Capsule.jpeg", "Capsule.webp"))
+        cover_file = _find_image(folder, ("Capsule.jpg", "Capsule.jpeg", "Capsule.png", "Capsule.webp"))
+        hero_file = _find_image(folder, ("Hero.jpg", "Hero.jpeg", "Hero.png", "Hero.webp", "Background.jpg", "Background.jpeg", "Background.png", "Background.webp"))
+        icon_file = _find_image(folder, ("Icon.png", "Icon.jpg", "Icon.jpeg", "Icon.webp", "Capsule.png", "Capsule.jpg", "Capsule.jpeg", "Capsule.webp"))
+        # Return browser-safe API URLs rather than Windows filesystem paths.
+        # This makes both cards and detail heroes work on the web panel.
+        media = lambda kind, present: f"/api/apps/media/{__import__('urllib.parse', fromlist=['quote']).quote(folder.name, safe='')}/{kind}" if present else None
+        cover = media("cover", cover_file)
+        capsule = media("capsule", cover_file)
+        hero = media("hero", hero_file or cover_file)
+        icon = media("icon", icon_file)
+        logo = media("logo", icon_file)
         result.append({
             "app_id": folder.name,
             "name": folder.name,
@@ -86,10 +94,12 @@ def scan_apps(root=None):
             "working_directory": str(game_dir.resolve()) if game_dir.is_dir() else str(folder.resolve()),
             "relative_path": str(folder.relative_to(root)),
             "cover": cover,
-            "capsule": cover,
-            "hero": hero or cover,
+            "capsule": capsule,
+            "hero": hero,
             "icon": icon,
-            "logo": icon,
+            "logo": logo,
+            "has_cover": bool(cover_file),
+            "has_hero": bool(hero_file),
         })
     return result
 
