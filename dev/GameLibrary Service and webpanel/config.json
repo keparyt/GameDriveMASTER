@@ -5,15 +5,15 @@
     "game_folder": "Cracked",
     "config_file": "GameDrive.ini",
     "image_cache": "data/images",
-    "playnite_fullscreen_path": "",
+    "playnite_fullscreen_path": "C:\\Users\\Kepar\\OneDrive\\Bureau\\Playnite\\Playnite.FullscreenApp.exe",
     "metadata": {
         "enabled": true,
         "auto_lookup": true
     },
     "playnite": {
         "enabled": true,
-        "path": "",
-        "libraryPath": "",
+        "path": "C:\\Users\\Kepar\\OneDrive\\Bureau\\Playnite\\Playnite.DesktopApp.exe",
+        "libraryPath": "C:\\Users\\Kepar\\AppData\\Roaming\\Playnite\\library",
         "refreshOnGameDriveChange": true
     }
 }

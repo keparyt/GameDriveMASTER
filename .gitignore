@@ -1,0 +1,24 @@
+# Visual Studio / .NET
+**/bin/
+**/obj/
+
+# Python
+**/__pycache__/
+*.py[cod]
+
+# Logs
+**/logs/
+*.log
+
+# SQLite temporary files
+*.db-shm
+*.db-wal
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# OS junk
+Thumbs.db
+.DS_Store

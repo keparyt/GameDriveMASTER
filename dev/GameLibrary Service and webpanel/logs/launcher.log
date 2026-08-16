@@ -1,5 +1,0 @@
-2026-08-15 02:43:22,638 [INFO] gamelibrary.launcher: ========== Game Library launcher.py ==========
-2026-08-15 02:43:22,638 [INFO] gamelibrary.launcher: Python: E:\DEV\GameDriveMASTER\dev\GameLibrary Service and webpanel\env\Scripts\python.exe
-2026-08-15 02:43:22,638 [INFO] gamelibrary.launcher: Base directory: E:\DEV\GameDriveMASTER\dev\GameLibrary Service and webpanel
-2026-08-15 02:43:22,638 [DEBUG] gamelibrary.launcher: Launching tray command: ['E:\\DEV\\GameDriveMASTER\\dev\\GameLibrary Service and webpanel\\env\\Scripts\\python.exe', '-m', 'tray.tray']
-2026-08-15 02:43:22,643 [INFO] gamelibrary.launcher: Tray process started: pid=189268
