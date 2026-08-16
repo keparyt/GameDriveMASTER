@@ -1,0 +1,12 @@
+const storageEsc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+const storageBytes=n=>{let v=Number(n||0),u=["B","GB","TB","PB"],i=0;while(v>=1024&&i<u.length-1){v/=1024;i++}return v?`${v>=10||i===0?Math.round(v):v.toFixed(1)} ${u[i]}`:"—"};
+function renderStorage(disks){const box=document.querySelector("#drives"),count=document.querySelector("#drive-count");if(!box)return;const gameDrives=new Map();
+  const indexed=window.__gamedrivePartitions||[];
+  indexed.forEach(p=>{const letter=p.last_letter?String(p.last_letter).toUpperCase():"";const key=letter;gameDrives.set(key,p)});
+  const online=indexed.filter(p=>Boolean(p.connected)).length;
+  count.textContent=`${online} loaded / ${indexed.length} partitions`;
+  if(!disks.length){box.innerHTML='<div class="storage-empty">No physical drives detected.</div>';return;}
+  box.innerHTML=`<div class="storage-panel">${disks.map(d=>{const parts=d.partitions||[];return `<div class="storage-disk"><div class="storage-disk-head"><span class="storage-disk-icon">▣</span><div class="storage-disk-main"><strong>${storageEsc(d.name||"Unknown drive")}</strong><span>SN: ${storageEsc(d.serial||"Unavailable")}</span></div><div class="storage-disk-meta"><span>${storageEsc(d.bus||"Unknown")}</span><span>${storageBytes(d.size)}</span><span class="storage-state ${d.offline?"offline":"online"}">${d.offline?"OFFLINE":"ONLINE"}</span></div></div><div class="storage-partitions">${parts.length?parts.map(p=>{const letter=p.letter?`${p.letter}:`:"No letter";const gd=gameDrives.get(String(p.letter||"").toUpperCase());const loaded=gd&&gd.connected;return `<div class="storage-partition"><span class="storage-partition-dot ${loaded?"loaded":""}"></span><span class="storage-partition-letter">${storageEsc(letter)}</span><span class="storage-partition-size">${storageBytes(p.size)}</span><span class="storage-partition-status">${loaded?"GAME DRIVE LOADED":storageEsc(p.status||"Available")}</span></div>`}).join(""): '<div class="storage-partition empty">No partitions reported</div>'}</div></div>`}).join("")}</div>`;
+}
+async function refreshStorage(){try{const [r,s]=await Promise.all([fetch("/api/drives",{cache:"no-store"}),fetch("/api/system/storage",{cache:"no-store"})]);if(!r.ok||!s.ok)return;window.__gamedrivePartitions=await r.json();renderStorage(await s.json())}catch(e){console.debug("Storage panel refresh failed",e)}}
+refreshStorage();setInterval(refreshStorage,5000);
