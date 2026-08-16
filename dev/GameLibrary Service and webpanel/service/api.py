@@ -77,15 +77,33 @@ def _matches(gd,pn):
     except (OSError,ValueError):pass
     return bool(install and _norm(gd.get("title") or gd.get("name"))==_norm(pn.get("name")) and _inside(install,root))
 
-def _media_file_path(value):
+def _media_file_path(value, base_paths=()):
+    """Resolve Playnite local artwork paths, including Windows file:// and relative paths."""
     if not value:return None
-    value=str(value)
+    value=str(value).strip()
+    if not value:return None
     if value.startswith("file://"):
         parsed=urllib.parse.urlparse(value)
-        value=urllib.parse.unquote(parsed.path)
-        if parsed.netloc: value=f"\\\\{parsed.netloc}{value}"
-    try:return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
-    except Exception:return None
+        if parsed.netloc:
+            value=f"\\\\{parsed.netloc}{urllib.parse.unquote(parsed.path)}"
+        else:
+            value=urllib.parse.unquote(parsed.path)
+            if len(value)>=3 and value.startswith("/") and value[2]==":": value=value[1:]
+    value=os.path.expandvars(os.path.expanduser(value))
+    p=Path(value)
+    candidates=[]
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        for base in base_paths:
+            if base: candidates.append(Path(base)/p)
+        candidates.append(Path.cwd()/p)
+    for candidate in candidates:
+        try:
+            resolved=candidate.resolve()
+            if resolved.is_file():return resolved
+        except Exception:pass
+    return None
 
 def create_app(db,metadata=None,config=None,playnite=None):
     app=FastAPI(title="Game Library API",version="1.1.0")
@@ -139,12 +157,17 @@ def create_app(db,metadata=None,config=None,playnite=None):
                 with urllib.request.urlopen(req,timeout=8) as r:data=r.read();ctype=r.headers.get_content_type() or "application/octet-stream"
                 return Response(data,media_type=ctype,headers={"Cache-Control":"public, max-age=86400"})
             except Exception:return {"error":"media_unavailable"}
-        path=_media_file_path(value)
-        if path and path.is_file():
+        appdata=Path(os.environ.get("APPDATA","") ) if os.environ.get("APPDATA") else None
+        bases=[playnite.library_path, playnite.library_path.parent if playnite.library_path else None, playnite.playnite_path.parent if playnite.playnite_path else None, appdata/"Playnite" if appdata else None]
+        path=_media_file_path(value,bases)
+        if path:
             allowed=[]
-            if playnite.library_path:allowed.append(playnite.library_path.resolve())
-            if playnite.playnite_path:allowed.append(playnite.playnite_path.parent.resolve())
-            if any(root==path or root in path.parents for root in allowed):return FileResponse(path)
+            for root in bases:
+                if root:
+                    try: allowed.append(Path(root).resolve())
+                    except Exception: pass
+            if any(root==path or root in path.parents for root in allowed):
+                return FileResponse(path)
         return {"error":"not_found"}
     @app.get("/api/health")
     def health():return {"ok":True,"service":"GameLibrary","playnite":playnite.status,"metadata_enabled":bool(metadata and metadata.enabled)}
