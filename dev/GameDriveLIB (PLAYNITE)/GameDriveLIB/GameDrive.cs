@@ -39,7 +39,7 @@ public sealed class GameDriveApiGame
     [DataMember(Name = "workingDirectory")] public string WorkingDirectory { get; set; }
     [DataMember(Name = "description")] public string Description { get; set; }
     [DataMember(Name = "releaseDate")] public string ReleaseDate { get; set; }
-    [DataMember(Name = "playtime")] public long Playtime { get; set; }
+    [DataMember(Name = "playtime")] public ulong Playtime { get; set; }
     [DataMember(Name = "cover")] public string Cover { get; set; }
     [DataMember(Name = "hero")] public string Hero { get; set; }
     [DataMember(Name = "logo")] public string Logo { get; set; }
@@ -319,15 +319,15 @@ public class GameDriveLibrary : LibraryPlugin
         {
             Id = game.Id.ToString(),
             Name = game.Name ?? "Unknown Game",
-            GameId = game.GameId == null ? null : game.GameId.ToString(),
-            SourceId = game.SourceId == null ? null : game.SourceId.ToString(),
+            GameId = game.GameId == null ? null : Convert.ToString(game.GameId),
+            SourceId = game.SourceId == null ? null : Convert.ToString(game.SourceId),
             IsInstalled = game.IsInstalled,
-            InstallDirectory = game.InstallDirectory == null ? null : game.InstallDirectory.ToString(),
-            Executable = action?.Path == null ? null : action.Path.ToString(),
-            Arguments = action?.Arguments == null ? null : action.Arguments.ToString(),
-            WorkingDirectory = action?.WorkingDir == null ? null : action.WorkingDir.ToString(),
+            InstallDirectory = game.InstallDirectory == null ? null : Convert.ToString(game.InstallDirectory),
+            Executable = action?.Path == null ? null : Convert.ToString(action.Path),
+            Arguments = action?.Arguments == null ? null : Convert.ToString(action.Arguments),
+            WorkingDirectory = action?.WorkingDir == null ? null : Convert.ToString(action.WorkingDir),
             Description = game.Description,
-            ReleaseDate = game.ReleaseDate.HasValue ? game.ReleaseDate.Value.ToString("o") : null,
+            ReleaseDate = game.ReleaseDate.HasValue ? Convert.ToString(game.ReleaseDate.Value) : null,
             Playtime = game.Playtime,
             Cover = game.CoverImage,
             Hero = game.BackgroundImage,
