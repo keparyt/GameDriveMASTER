@@ -37,7 +37,6 @@ def _local_ip():
     except OSError:
         try: return socket.gethostbyname(socket.gethostname())
         except OSError: return "127.0.0.1"
-        
     finally: s.close()
 
 def _steam_details(app_id):
@@ -157,6 +156,27 @@ def create_app(db,metadata=None,config=None,playnite=None):
     @app.get("/artwork/{game_name}/{filename}")
     def artwork(game_name:str,filename:str):
         path=(ARTWORK_DIR/game_name/filename).resolve();root=ARTWORK_DIR.resolve();return FileResponse(path) if root in path.parents and path.is_file() else {"error":"not_found"}
+    @app.get("/api/network")
+    def network():
+        ip=_local_ip()
+        port=8765
+        return {"ip":ip,"port":port,"url":f"http://{ip}:{port}","playnite_configured":bool((config or {}).get("playnite",{}).get("playnite_fullscreen_path"))}
+    @app.get("/api/network/qr")
+    def network_qr(text:str|None=None):
+        ip=_local_ip()
+        target=f"http://{ip}:8765"
+        # Only accept an explicit HTTP(S) target when supplied; otherwise always use this server's LAN address.
+        if text:
+            candidate=urllib.parse.unquote(str(text)).strip()
+            parsed=urllib.parse.urlparse(candidate)
+            if parsed.scheme in ("http","https") and parsed.hostname and parsed.port:
+                if parsed.hostname in ("127.0.0.1","localhost","0.0.0.0",ip):
+                    target=candidate
+        qr=qrcode.QRCode(version=None,error_correction=qrcode.constants.ERROR_CORRECT_M,box_size=8,border=4)
+        qr.add_data(target); qr.make(fit=True)
+        image=qr.make_image(fill_color="black",back_color="white")
+        buf=io.BytesIO(); image.save(buf,format="PNG"); buf.seek(0)
+        return Response(buf.getvalue(),media_type="image/png",headers={"Cache-Control":"no-store"})
     @app.get("/api/apps/media/{app_id}/{kind}")
     def app_media(app_id:str,kind:str):
         if kind not in ("cover","capsule","hero","icon","logo"):return {"error":"not_found"}
@@ -175,10 +195,8 @@ def create_app(db,metadata=None,config=None,playnite=None):
             "logo":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp"),
         }
         wanted={n.casefold() for n in names[kind]}
-        try:
-            path=next((p for p in folder.iterdir() if p.is_file() and p.name.casefold() in wanted),None)
-        except OSError:
-            path=None
+        try:path=next((p for p in folder.iterdir() if p.is_file() and p.name.casefold() in wanted),None)
+        except OSError:path=None
         if path and path.is_file():return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
         return {"error":"not_found"}
     @app.get("/api/playnite/media/{playnite_id}/{kind}")
