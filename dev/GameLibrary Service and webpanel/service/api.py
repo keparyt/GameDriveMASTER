@@ -111,8 +111,18 @@ def create_app(db,metadata=None,config=None,playnite=None):
         value=str(value)
         if value.startswith(("http://","https://","data:")):return value
         return "/api/playnite/media/"+urllib.parse.quote(str(pid),safe="")+"/"+kind
+    def app_media_url(app_id,kind,value):
+        if not value:return None
+        return "/api/apps/media/"+urllib.parse.quote(str(app_id),safe="")+"/"+kind
     def library(q="",connected=False,mode="playlist"):
         gd=[dict(r) for r in db.search(q,connected)]; pn=p_games(); used=set(); out=[]
+        if mode=="apps":
+            apps=scan_apps()
+            if q: apps=[a for a in apps if _norm(q) in _norm(a["name"])]
+            for a in apps:
+                for k in ("cover","capsule","icon","logo"):
+                    if a.get(k):a[k]=app_media_url(a["app_id"],k,a[k])
+            return sorted(apps,key=lambda x:str(x.get("title") or x.get("name") or "").lower())
         for g in gd:
             m=next((p for p in pn if p["playnite_id"] not in used and _matches(g,p)),None)
             if m:used.add(m["playnite_id"])
@@ -131,12 +141,9 @@ def create_app(db,metadata=None,config=None,playnite=None):
                 x=dict(p);x.update({"id":None,"unified_id":"pn:"+str(p["playnite_id"]),"source":"playnite","playnite_managed":True,"playnite_id":p["playnite_id"],"title":p["name"],"connected":True,"last_letter":Path(p["install_directory"]).drive.rstrip(":") if p.get("install_directory") else None,"drive_name":"Playnite","installation_state":"Installed","launch_source":"Playnite"})
                 for k in ("cover","capsule","hero","logo"):x[k]=media(p["playnite_id"],k,x.get(k))
                 out.append(x)
-        if mode=="apps":
-            out=[a for a in scan_apps() if not q or _norm(q) in _norm(a["name"])]
         return sorted(out,key=lambda x:str(x.get("title") or x.get("name") or "").lower())
     def find(uid):
-        # Apps have their own category, so resolve app:<name> directly.
-        app_item=next((x for x in scan_apps() if x["unified_id"]==uid),None)
+        app_item=next((x for x in scan_apps() if x["unified_id"].casefold()==str(uid).casefold()),None)
         if app_item:return app_item
         return next((x for x in library() if x["unified_id"]==uid),None)
     @app.get("/",response_class=HTMLResponse)
@@ -145,6 +152,17 @@ def create_app(db,metadata=None,config=None,playnite=None):
     @app.get("/artwork/{game_name}/{filename}")
     def artwork(game_name:str,filename:str):
         path=(ARTWORK_DIR/game_name/filename).resolve();root=ARTWORK_DIR.resolve();return FileResponse(path) if root in path.parents and path.is_file() else {"error":"not_found"}
+    @app.get("/api/apps/media/{app_id}/{kind}")
+    def app_media(app_id:str,kind:str):
+        if kind not in ("cover","capsule","icon","logo"):return {"error":"not_found"}
+        a=find_app(app_id)
+        if not a:return {"error":"not_found"}
+        value=a.get("cover") if kind in ("cover","capsule") else a.get("icon")
+        if not value:return {"error":"not_found"}
+        path=_media_file_path(value,[Path(a["install_directory"]).parent,Path(a["install_directory"]),BASE_DIR/"apps"])
+        if path:
+            return FileResponse(path,headers={"Cache-Control":"public, max-age=86400"})
+        return {"error":"not_found"}
     @app.get("/api/playnite/media/{playnite_id}/{kind}")
     def p_media(playnite_id:str,kind:str):
         if kind not in ("cover","capsule","hero","logo"):return {"error":"not_found"}
@@ -219,7 +237,7 @@ def create_app(db,metadata=None,config=None,playnite=None):
         if not x:return {"ok":False,"error":"not_found"}
         if x.get("source")=="apps":
             app=find_app(x.get("app_id"))
-            if not app:return {"ok":False,"error":"app_not_found"}
+            if not app or not app.get("launchable"):return {"ok":False,"error":"app_executable_not_found"}
             try:
                 command=[app["executable"]]+list(app.get("arguments") or [])
                 subprocess.Popen(command,cwd=app["working_directory"],creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
