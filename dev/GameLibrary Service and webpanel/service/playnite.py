@@ -159,7 +159,8 @@ class PlayniteBridge:
 
     def _media_value(self, value, game_id=None):
         if not value: return None
-        value = str(value)
+        value = str(value).strip()
+        if not value: return None
         if value.startswith("data:") or value.startswith("http://") or value.startswith("https://"):
             return value
         if value.startswith("file://"):
@@ -170,15 +171,29 @@ class PlayniteBridge:
                 value = unquote(parsed.path)
                 if len(value) >= 3 and value.startswith("/") and value[2] == ":":
                     value = value[1:]
-        # Playnite stores its downloaded artwork in library/files/<game GUID>/.
-        # The API may return only the artwork filename, so resolve it directly
-        # against that game's Playnite media directory.
         p = Path(os.path.expandvars(os.path.expanduser(value)))
-        if not p.is_absolute() and game_id and self.library_path:
-            game_media_dir = self.library_path / "files" / str(game_id)
-            candidate = game_media_dir / p
-            if candidate.is_file():
-                return str(candidate.resolve())
+        if p.is_absolute():
+            try:
+                if p.is_file(): return str(p.resolve())
+            except Exception: pass
+            return value
+        if game_id and self.library_path:
+            media_root = self.library_path / "files" / str(game_id)
+            candidates = [
+                media_root / p,
+                self.library_path / p,
+                media_root / p.name,
+            ]
+            # Playnite/API versions can return paths such as files/<guid>/cover.png.
+            # If so, resolve that path from the library root instead of duplicating files/<guid>.
+            normalized = str(p).replace("/", os.sep).replace("\\", os.sep)
+            if normalized.lower().startswith("files" + os.sep):
+                candidates.insert(0, self.library_path / normalized)
+            for candidate in candidates:
+                try:
+                    resolved = candidate.resolve()
+                    if resolved.is_file(): return str(resolved)
+                except Exception: pass
         return value
 
     def _parse(self, game):
