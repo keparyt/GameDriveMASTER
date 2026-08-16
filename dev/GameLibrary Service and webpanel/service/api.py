@@ -31,6 +31,22 @@ def _physical_disks():
         return [{"number":d.get("Number"),"name":d.get("FriendlyName") or "Unknown disk","serial":d.get("SerialNumber") or "","bus":d.get("BusType") or "Unknown","media":d.get("MediaType") or "Unknown","size":int(d.get("Size") or 0),"status":d.get("OperationalStatus") or "Unknown","health":d.get("HealthStatus") or "Unknown","offline":bool(d.get("IsOffline")),"readonly":bool(d.get("IsReadOnly"))} for d in data]
     except Exception: return []
 
+def _storage_layout():
+    if not hasattr(ctypes,"windll"): return []
+    command="Get-Disk -ErrorAction SilentlyContinue | ForEach-Object { $d=$_; [pscustomobject]@{ Number=$d.Number; Name=$d.FriendlyName; Serial=$d.SerialNumber; Bus=$d.BusType; Size=$d.Size; Status=$d.OperationalStatus; Health=$d.HealthStatus; Offline=$d.IsOffline; Partitions=@(Get-Partition -DiskNumber $d.Number -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Number=$_.PartitionNumber; Letter=([string]$_.DriveLetter); Size=$_.Size; Type=$_.Type; Status=$_.OperationalStatus } }) } } | ConvertTo-Json -Compress -Depth 5"
+    try:
+        r=subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",command],capture_output=True,text=True,timeout=5,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        if r.returncode or not r.stdout.strip(): return []
+        data=json.loads(r.stdout); data=[data] if isinstance(data,dict) else data
+        out=[]
+        for d in data:
+            parts=d.get("Partitions") or []
+            parts=[parts] if isinstance(parts,dict) else parts
+            out.append({"number":d.get("Number"),"name":d.get("Name") or "Unknown disk","serial":d.get("Serial") or "","bus":d.get("Bus") or "Unknown","size":int(d.get("Size") or 0),"status":d.get("Status") or "Unknown","health":d.get("Health") or "Unknown","offline":bool(d.get("Offline")),"partitions":[{"number":p.get("Number"),"letter":p.get("Letter") or "","size":int(p.get("Size") or 0),"type":p.get("Type") or "","status":p.get("Status") or "Unknown"} for p in parts]})
+        return out
+    except Exception as exc:
+        return []
+
 def _local_ip():
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     try: s.connect(("8.8.8.8",80)); return s.getsockname()[0]
@@ -165,35 +181,23 @@ def create_app(db,metadata=None,config=None,playnite=None):
     def network_qr(text:str|None=None):
         ip=_local_ip()
         target=f"http://{ip}:8765"
-        # Only accept an explicit HTTP(S) target when supplied; otherwise always use this server's LAN address.
         if text:
-            candidate=urllib.parse.unquote(str(text)).strip()
-            parsed=urllib.parse.urlparse(candidate)
-            if parsed.scheme in ("http","https") and parsed.hostname and parsed.port:
-                if parsed.hostname in ("127.0.0.1","localhost","0.0.0.0",ip):
-                    target=candidate
-        qr=qrcode.QRCode(version=None,error_correction=qrcode.constants.ERROR_CORRECT_M,box_size=8,border=4)
-        qr.add_data(target); qr.make(fit=True)
-        image=qr.make_image(fill_color="black",back_color="white")
-        buf=io.BytesIO(); image.save(buf,format="PNG"); buf.seek(0)
+            candidate=urllib.parse.unquote(str(text)).strip(); parsed=urllib.parse.urlparse(candidate)
+            if parsed.scheme in ("http","https") and parsed.hostname and parsed.port and parsed.hostname in ("127.0.0.1","localhost","0.0.0.0",ip):target=candidate
+        qr=qrcode.QRCode(version=None,error_correction=qrcode.constants.ERROR_CORRECT_M,box_size=8,border=4); qr.add_data(target); qr.make(fit=True)
+        image=qr.make_image(fill_color="black",back_color="white"); buf=io.BytesIO(); image.save(buf,format="PNG"); buf.seek(0)
         return Response(buf.getvalue(),media_type="image/png",headers={"Cache-Control":"no-store"})
+    @app.get("/api/system/storage")
+    def system_storage():
+        return _storage_layout()
     @app.get("/api/apps/media/{app_id}/{kind}")
     def app_media(app_id:str,kind:str):
         if kind not in ("cover","capsule","hero","icon","logo"):return {"error":"not_found"}
-        app_name=urllib.parse.unquote(str(app_id))
-        a=find_app(app_name)
+        app_name=urllib.parse.unquote(str(app_id)); a=find_app(app_name)
         if not a:return {"error":"not_found"}
-        app_folder=Path(a.get("relative_path") or a.get("app_id") or app_name)
-        root=Path(os.environ.get("GAMEDRIVE_APPS_PATH") or APPS_DIR).resolve()
-        folder=(root/app_folder).resolve()
+        app_folder=Path(a.get("relative_path") or a.get("app_id") or app_name); root=Path(os.environ.get("GAMEDRIVE_APPS_PATH") or APPS_DIR).resolve(); folder=(root/app_folder).resolve()
         if root not in folder.parents or not folder.is_dir():return {"error":"not_found"}
-        names={
-            "cover":("Capsule.jpg","Capsule.jpeg","Capsule.png","Capsule.webp"),
-            "capsule":("Capsule.jpg","Capsule.jpeg","Capsule.png","Capsule.webp"),
-            "hero":("Hero.jpg","Hero.jpeg","Hero.png","Hero.webp","Background.jpg","Background.jpeg","Background.png","Background.webp"),
-            "icon":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp"),
-            "logo":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp"),
-        }
+        names={"cover":("Capsule.jpg","Capsule.jpeg","Capsule.png","Capsule.webp"),"capsule":("Capsule.jpg","Capsule.jpeg","Capsule.png","Capsule.webp"),"hero":("Hero.jpg","Hero.jpeg","Hero.png","Hero.webp","Background.jpg","Background.jpeg","Background.png","Background.webp"),"icon":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp"),"logo":("Icon.png","Icon.jpg","Icon.jpeg","Icon.webp","Capsule.png","Capsule.jpg","Capsule.jpeg","Capsule.webp")}
         wanted={n.casefold() for n in names[kind]}
         try:path=next((p for p in folder.iterdir() if p.is_file() and p.name.casefold() in wanted),None)
         except OSError:path=None
@@ -232,10 +236,7 @@ def create_app(db,metadata=None,config=None,playnite=None):
             exe=x.get("executable")
             if not exe:return {"ok":False,"error":"app_not_launchable"}
             try:
-                args=x.get("arguments") or []
-                if isinstance(args,str):args=[args]
-                subprocess.Popen([exe,*args],cwd=x.get("working_directory") or None)
-                return {"ok":True}
+                args=x.get("arguments") or []; args=[args] if isinstance(args,str) else args; subprocess.Popen([exe,*args],cwd=x.get("working_directory") or None); return {"ok":True}
             except Exception as e:return {"ok":False,"error":"app_launch_failed","detail":str(e)}
         if x.get("playnite_id") and x.get("launch_source")=="Playnite":return playnite.launch(x["playnite_id"])
         return {"ok":False,"error":"not_launchable"}
