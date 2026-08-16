@@ -1,2 +1,4 @@
 discord.py>=2.6
 aiohttp>=3.12
+yt-dlp>=2026.8.0
+faster-whisper>=1.2.0

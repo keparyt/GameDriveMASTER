@@ -59,6 +59,7 @@ class Bot(commands.Bot):
         log("Loading commands...")
 
         await self.load_extension("commands.connection")
+        await self.load_extension("commands.reel_mods")
 
         log("Loading events...")
 

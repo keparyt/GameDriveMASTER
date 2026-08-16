@@ -17,3 +17,12 @@ HOME_ROLE_ID = 0
 
 # Seconds before a connection is considered dead.
 LAN_CONNECTION_TIMEOUT = 600
+
+
+# Reel Minecraft mod parser
+# These are environment variables rather than hard-coded secrets.
+# OLLAMA_VISION_MODEL should be a small vision model suitable for a GTX 1660 SUPER.
+# Example: qwen2.5vl:3b
+# OLLAMA_TEXT_MODEL is used to combine caption/audio/visual clues.
+# Example: qwen2.5:3b
+# CURSEFORGE_API_KEY is optional; Modrinth verification works without it.
