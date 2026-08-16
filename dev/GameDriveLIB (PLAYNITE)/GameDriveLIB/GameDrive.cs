@@ -69,6 +69,8 @@ public class GameDriveLibrary : LibraryPlugin
     private Thread libraryServerThread;
     private const int LibraryApiPort = 38123;
     private volatile bool libraryReady;
+
+    // Override with GAMEDRIVE_APPS_PATH on another installation.
     private static string AppsRoot => Environment.GetEnvironmentVariable("GAMEDRIVE_APPS_PATH") ?? @"E:\DEV\GameDriveMASTER\dev\GameLibrary Service and webpanel\apps";
 
     public override Guid Id { get; } = Guid.Parse("9c8e41d2-18cb-40d3-b5a3-3b97766d0101");
@@ -110,6 +112,8 @@ public class GameDriveLibrary : LibraryPlugin
     public override IEnumerable<GameMetadata> GetGames(LibraryGetGamesArgs args)
     {
         var games = new List<GameMetadata>();
+
+        // GameDrive games from removable/local GameDrive partitions.
         foreach (var drive in DriveInfo.GetDrives().Where(d => d.IsReady))
         {
             string iniPath = Path.Combine(drive.RootDirectory.FullName, "GameDrive.ini");
@@ -118,6 +122,7 @@ public class GameDriveLibrary : LibraryPlugin
             try { ini = new FileIniDataParser().ReadFile(iniPath); }
             catch (Exception ex) { logger.Error(ex, $"GameDrive: failed to parse {iniPath}"); continue; }
             if (!ini.Sections.ContainsSection("Directories")) continue;
+
             foreach (var key in ini["Directories"])
             {
                 string folder = Path.Combine(drive.RootDirectory.FullName, key.Value);
@@ -143,6 +148,9 @@ public class GameDriveLibrary : LibraryPlugin
                 }
             }
         }
+
+        // Local apps are regular Playnite library entries as well, so they are
+        // available from Playnite Desktop/Fullscreen and from the GameDrive UI.
         AddApps(games);
         return games;
     }
@@ -155,29 +163,77 @@ public class GameDriveLibrary : LibraryPlugin
             logger.Info($"GameDrive: Apps directory not found: {root}");
             return;
         }
+
         foreach (string appFolder in Directory.GetDirectories(root))
         {
             string name = Path.GetFileName(appFolder);
             string exeTxt = Path.Combine(appFolder, "exepath.txt");
             string gameDir = Path.Combine(appFolder, "Game");
             if (!File.Exists(exeTxt) || !Directory.Exists(gameDir)) continue;
+
             string relativeExe;
-            try { relativeExe = File.ReadAllText(exeTxt).Trim(); } catch { continue; }
+            try { relativeExe = File.ReadAllText(exeTxt).Trim(); }
+            catch { continue; }
+
             if (string.IsNullOrWhiteSpace(relativeExe)) continue;
-            if (Path.IsPathRooted(relativeExe) || relativeExe.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries).Contains("..")) continue;
-            string exe = Path.GetFullPath(Path.Combine(gameDir, relativeExe));
-            string fullGameDir = Path.GetFullPath(gameDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (Path.IsPathRooted(relativeExe)) continue;
+
+            var parts = relativeExe.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Contains("..")) continue;
+
+            string exe;
+            try { exe = Path.GetFullPath(Path.Combine(gameDir, relativeExe)); }
+            catch { continue; }
+
+            string fullGameDir;
+            try { fullGameDir = Path.GetFullPath(gameDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar; }
+            catch { continue; }
+
             if (!File.Exists(exe) || !exe.StartsWith(fullGameDir, StringComparison.OrdinalIgnoreCase)) continue;
-            games.Add(new GameMetadata
+
+            string capsule = FindAppImage(appFolder, "Capsule.jpg", "Capsule.jpeg", "Capsule.png");
+            string icon = FindAppImage(appFolder, "Icon.png", "Icon.jpg", "Icon.jpeg", "Capsule.png", "Capsule.jpg");
+
+            var metadata = new GameMetadata
             {
                 Name = name,
+                // Stable namespace prevents an app named e.g. "Youtube" from
+                // colliding with a GameDrive game using the same GameId.
                 GameId = "app:" + name,
                 InstallDirectory = gameDir,
                 IsInstalled = true,
-                GameActions = new List<GameAction> { new GameAction { Name = "Open", Type = GameActionType.File, Path = exe, IsPlayAction = true, WorkingDir = gameDir } },
+                GameActions = new List<GameAction>
+                {
+                    new GameAction
+                    {
+                        Name = "Open",
+                        Type = GameActionType.File,
+                        Path = exe,
+                        IsPlayAction = true,
+                        WorkingDir = gameDir
+                    }
+                },
                 Categories = new HashSet<MetadataProperty> { new MetadataNameProperty("Apps") }
-            });
+            };
+
+            // Playnite stores these paths in its library database, so the
+            // fullscreen client can display the app artwork normally.
+            if (!string.IsNullOrEmpty(capsule)) metadata.CoverImage = capsule;
+            if (!string.IsNullOrEmpty(icon)) metadata.Icon = icon;
+
+            games.Add(metadata);
+            logger.Info($"GameDrive: discovered app '{name}' -> {exe}");
         }
+    }
+
+    private static string FindAppImage(string folder, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            string path = Path.Combine(folder, name);
+            if (File.Exists(path)) return path;
+        }
+        return null;
     }
 
     private void StartLibraryApi()
@@ -280,6 +336,7 @@ public class GameDriveLibrary : LibraryPlugin
                 WriteJson(stream, new GameDriveHealthResponse { Ok = true, Ready = open, Source = "PlayniteApi.Database.Games", GameCount = total, InstalledCount = installed }, 200);
                 return;
             }
+
             if (path == "/games")
             {
                 if (!api.Database.IsOpen)
@@ -287,11 +344,13 @@ public class GameDriveLibrary : LibraryPlugin
                     WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "playnite_database_not_ready" }, 503);
                     return;
                 }
+
                 var result = api.Database.Games.Where(g => g != null && g.IsInstalled).Select(ToApiGame).ToList();
                 logger.Info($"GameDrive: serving {result.Count} installed Playnite game(s) through /games");
                 WriteJson(stream, result, 200);
                 return;
             }
+
             const string launchPrefix = "/games/";
             const string launchSuffix = "/launch";
             if (path.StartsWith(launchPrefix) && path.EndsWith(launchSuffix))
@@ -303,12 +362,14 @@ public class GameDriveLibrary : LibraryPlugin
                     WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "invalid_playnite_id" }, 400);
                     return;
                 }
+
                 var game = api.Database.Games.FirstOrDefault(g => g != null && g.Id == id && g.IsInstalled);
                 if (game == null)
                 {
                     WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "game_not_found" }, 404);
                     return;
                 }
+
                 try
                 {
                     api.StartGame(game.Id);
@@ -321,6 +382,7 @@ public class GameDriveLibrary : LibraryPlugin
                 }
                 return;
             }
+
             WriteJson(stream, new GameDriveErrorResponse { Ok = false, Error = "not_found" }, 404);
         }
         catch (Exception ex)
@@ -335,9 +397,21 @@ public class GameDriveLibrary : LibraryPlugin
         var action = game.GameActions?.FirstOrDefault(a => a != null && a.IsPlayAction) ?? game.GameActions?.FirstOrDefault();
         return new GameDriveApiGame
         {
-            Id = game.Id.ToString(), Name = game.Name ?? "Unknown Game", GameId = game.GameId == null ? null : Convert.ToString(game.GameId), SourceId = game.SourceId == null ? null : Convert.ToString(game.SourceId), IsInstalled = game.IsInstalled,
-            InstallDirectory = game.InstallDirectory == null ? null : Convert.ToString(game.InstallDirectory), Executable = action?.Path == null ? null : Convert.ToString(action.Path), Arguments = action?.Arguments == null ? null : Convert.ToString(action.Arguments), WorkingDirectory = action?.WorkingDir == null ? null : Convert.ToString(action.WorkingDir),
-            Description = game.Description, ReleaseDate = game.ReleaseDate.HasValue ? Convert.ToString(game.ReleaseDate.Value) : null, Playtime = game.Playtime, Cover = game.CoverImage, Hero = game.BackgroundImage, Logo = game.Icon
+            Id = game.Id.ToString(),
+            Name = game.Name ?? "Unknown Game",
+            GameId = game.GameId == null ? null : Convert.ToString(game.GameId),
+            SourceId = game.SourceId == null ? null : Convert.ToString(game.SourceId),
+            IsInstalled = game.IsInstalled,
+            InstallDirectory = game.InstallDirectory == null ? null : Convert.ToString(game.InstallDirectory),
+            Executable = action?.Path == null ? null : Convert.ToString(action.Path),
+            Arguments = action?.Arguments == null ? null : Convert.ToString(action.Arguments),
+            WorkingDirectory = action?.WorkingDir == null ? null : Convert.ToString(action.WorkingDir),
+            Description = game.Description,
+            ReleaseDate = game.ReleaseDate.HasValue ? Convert.ToString(game.ReleaseDate.Value) : null,
+            Playtime = game.Playtime,
+            Cover = game.CoverImage,
+            Hero = game.BackgroundImage,
+            Logo = game.Icon
         };
     }
 
@@ -345,10 +419,22 @@ public class GameDriveLibrary : LibraryPlugin
     {
         string json;
         var serializer = new DataContractJsonSerializer(value.GetType());
-        using (var ms = new MemoryStream()) { serializer.WriteObject(ms, value); json = Encoding.UTF8.GetString(ms.ToArray()); }
+        using (var ms = new MemoryStream())
+        {
+            serializer.WriteObject(ms, value);
+            json = Encoding.UTF8.GetString(ms.ToArray());
+        }
+
         byte[] body = Encoding.UTF8.GetBytes(json);
         string status = statusCode == 200 ? "OK" : statusCode == 400 ? "Bad Request" : statusCode == 404 ? "Not Found" : statusCode == 409 ? "Conflict" : statusCode == 500 ? "Internal Server Error" : "Service Unavailable";
-        string header = "HTTP/1.1 " + statusCode + " " + status + "\r\n" + "Content-Type: application/json; charset=utf-8\r\n" + "Content-Length: " + body.Length + "\r\n" + "Access-Control-Allow-Origin: *\r\n" + "Connection: close\r\n\r\n";
-        byte[] head = Encoding.ASCII.GetBytes(header); stream.Write(head, 0, head.Length); stream.Write(body, 0, body.Length); stream.Flush();
+        string header = "HTTP/1.1 " + statusCode + " " + status + "\r\n" +
+                        "Content-Type: application/json; charset=utf-8\r\n" +
+                        "Content-Length: " + body.Length + "\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "Connection: close\r\n\r\n";
+        byte[] head = Encoding.ASCII.GetBytes(header);
+        stream.Write(head, 0, head.Length);
+        stream.Write(body, 0, body.Length);
+        stream.Flush();
     }
 }
