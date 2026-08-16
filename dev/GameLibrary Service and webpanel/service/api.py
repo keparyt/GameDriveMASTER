@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 
 import qrcode
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from .playnite import PlayniteBridge
@@ -48,16 +48,8 @@ def _storage_layout():
         return []
 
 def _local_ip():
-    """
-    Return the local LAN IPv4 address used by the web-panel QR code.
-
-    Only 192.168.x.x addresses are accepted intentionally.
-    This prevents the QR code from ever advertising 127.0.0.1,
-    localhost, VPN addresses, or other interfaces.
-    """
+    """Return the Windows 192.168.x.x LAN IPv4 address."""
     try:
-        # Windows: use ipconfig so we get the same LAN address
-        # the user sees from their network configuration.
         result = subprocess.run(
             ["ipconfig"],
             capture_output=True,
@@ -70,50 +62,25 @@ def _local_ip():
         for line in result.stdout.splitlines():
             line = line.strip()
 
-            if "IPv4 Address" not in line:
-                continue
-
-            # Handles:
-            # IPv4 Address. . . . . . . . . . . : 192.168.1.123
-            # IPv4 Address. . . . . . . . . . . : 192.168.1.123 (Preferred)
-            if ":" not in line:
+            if "IPv4 Address" not in line or ":" not in line:
                 continue
 
             ip = line.rsplit(":", 1)[1].strip()
             ip = ip.split("(")[0].strip()
 
-            if ip.startswith("192.168."):
-                parts = ip.split(".")
+            if not ip.startswith("192.168."):
+                continue
 
-                if len(parts) == 4 and all(
-                    part.isdigit() and 0 <= int(part) <= 255
-                    for part in parts
-                ):
-                    return ip
+            parts = ip.split(".")
+            if len(parts) == 4 and all(
+                p.isdigit() and 0 <= int(p) <= 255
+                for p in parts
+            ):
+                return ip
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[network] ipconfig detection failed: {e}")
 
-    # Secondary method in case ipconfig parsing fails.
-    try:
-        hostname = socket.gethostname()
-
-        for ip in socket.gethostbyname_ex(hostname)[2]:
-            if ip.startswith("192.168."):
-                parts = ip.split(".")
-
-                if len(parts) == 4 and all(
-                    part.isdigit() and 0 <= int(part) <= 255
-                    for part in parts
-                ):
-                    return ip
-
-    except Exception:
-        pass
-
-    # Do NOT return 127.0.0.1.
-    # Returning None lets the caller know that no suitable LAN
-    # address was found.
     return None
 
 def _steam_details(app_id):
@@ -244,11 +211,17 @@ def create_app(db,metadata=None,config=None,playnite=None):
             "host": ip,
             "port": 8765,
             "url": f"http://{ip}:8765" if ip else None,
-            "playnite_configured": bool(PLAYNITE_FULLSCREEN_PATH),
         }
     @app.get("/api/network/qr")
     def network_qr(text:str|None=None):
-        ip=_local_ip()
+        ip = _local_ip()
+
+        if not ip:
+            raise HTTPException(
+                status_code=503,
+                detail="No 192.168.x.x LAN address detected"
+            )
+
         target=f"http://{ip}:8765"
         if text:
             candidate=urllib.parse.unquote(str(text)).strip(); parsed=urllib.parse.urlparse(candidate)
