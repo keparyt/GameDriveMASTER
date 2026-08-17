@@ -8,9 +8,7 @@ Dim pythonw
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-base = fso.GetParentFolderName(
-    WScript.ScriptFullName
-)
+base = fso.GetParentFolderName(WScript.ScriptFullName)
 
 pythonw = "pythonw.exe"
 
