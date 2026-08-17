@@ -1,5 +1,6 @@
 import json
 import logging
+import subprocess
 import sys
 import threading
 import time
@@ -69,7 +70,24 @@ def main():
 
         if playnite.enabled:
             try:
-                playnite.start(wait_for_api=False)
+                # If Playnite is already running, leave its current mode alone.
+                # If it is not running, explicitly start it in Fullscreen mode.
+                if playnite._is_running():
+                    log.info("Playnite is already running; leaving its current mode unchanged")
+                    playnite.start(wait_for_api=False)
+                elif playnite.playnite_path and playnite.playnite_path.is_file():
+                    subprocess.Popen(
+                        [str(playnite.playnite_path), "--startfullscreen"],
+                        cwd=str(playnite.playnite_path.parent),
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    playnite._startup_attempted = True
+                    log.info("Playnite was not running; started it in Fullscreen mode: %s", playnite.playnite_path)
+                else:
+                    log.warning("Playnite executable not found: %s", playnite.playnite_path)
             except Exception:
                 log.exception("Playnite startup failed; continuing and retrying in background")
 
