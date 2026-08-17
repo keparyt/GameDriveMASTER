@@ -1,1 +1,1 @@
-run-dev.bat
+dist-electron\win-unpacked
