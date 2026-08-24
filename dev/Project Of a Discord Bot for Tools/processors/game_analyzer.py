@@ -20,6 +20,7 @@ MAX_TRANSCRIPT_CHARS = 12000
 MAX_GAMES = 25
 STEAM_MATCH_THRESHOLD = 0.88
 KEPARDB_MATCH_THRESHOLD = 0.88
+MAX_SOCIAL_MEDIA_ITEMS = 20
 
 
 def _run(command: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
@@ -174,6 +175,16 @@ INPUT: {name}
         return name
 
 
+def _is_instagram_url(url: str) -> bool:
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        pass
+    return host in {"instagram.com", "www.instagram.com", "m.instagram.com"} and re.search(r"/(p|reel|reels|tv)/", url, re.I) is not None
+
+
 async def analyze_game_input(data: dict) -> dict:
     workdir = Path(tempfile.mkdtemp(prefix="game-detector-"))
     try:
@@ -199,35 +210,72 @@ async def analyze_game_input(data: dict) -> dict:
                 corrected_candidates.append(item)
             games, unresolved = await _verify_and_enrich(corrected_candidates)
             return _result(games, unresolved)
+
         text_parts = []
         if text:
-            text_parts.append(f"Discord text:\n{text}")
+            text_parts.append(f"Discord text/caption:\n{text}")
         media_files = []
-        for url in data.get("urls", [])[:3]:
+
+        for url in data.get("urls", [])[:5]:
             try:
-                metadata, media = await _download_url(url, workdir)
+                metadata, downloaded_media = await _download_url(url, workdir)
+                source_name = "Instagram" if _is_instagram_url(url) else "social media"
                 if metadata.get("title"):
-                    text_parts.append(f"Video title:\n{metadata['title']}")
+                    text_parts.append(f"{source_name} title:\n{metadata['title']}")
                 if metadata.get("description"):
-                    text_parts.append(f"Video description:\n{metadata['description'][:8000]}")
-                if media:
+                    text_parts.append(f"{source_name} description/caption:\n{metadata['description'][:10000]}")
+                if metadata.get("uploader"):
+                    text_parts.append(f"{source_name} account:\n{metadata['uploader']}")
+                if metadata.get("entries"):
+                    for entry in metadata["entries"][:MAX_SOCIAL_MEDIA_ITEMS]:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry_title = entry.get("title") or entry.get("description") or entry.get("alt_title")
+                        if entry_title:
+                            text_parts.append(f"{source_name} media item metadata:\n{str(entry_title)[:6000]}")
+                for media in downloaded_media:
                     media_files.append(media)
+                log(f"Game detector | {source_name} media collected | url={url} | items={len(downloaded_media)}")
             except Exception as exc:
                 log(f"Game detector URL error | {url} | {type(exc).__name__}: {exc}")
+
         for item in data.get("video_attachments", []):
             target = workdir / item["filename"]
             await _download_attachment(item["url"], target)
             media_files.append(target)
+
         for item in data.get("image_attachments", []):
             target = workdir / item["filename"]
             await _download_attachment(item["url"], target)
-            ocr = await _ocr_image(target)
-            if ocr:
-                text_parts.append(f"Screenshot OCR:\n{ocr[:6000]}")
-        if media_files:
-            transcript = await _transcribe(media_files[0], workdir)
-            if transcript:
-                text_parts.append(f"Audio transcript:\n{transcript[:MAX_TRANSCRIPT_CHARS]}")
+            media_files.append(target)
+
+        # Process EVERY media item. Instagram carousels can contain several
+        # images/videos and we must not only inspect the first one.
+        video_count = 0
+        image_count = 0
+        transcript_parts = []
+        ocr_parts = []
+        for index, media in enumerate(media_files[:MAX_SOCIAL_MEDIA_ITEMS], start=1):
+            suffix = media.suffix.lower()
+            if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}:
+                image_count += 1
+                ocr = await _ocr_image(media)
+                if ocr:
+                    ocr_parts.append(f"Media image #{index} OCR:\n{ocr[:6000]}")
+            else:
+                video_count += 1
+                transcript = await _transcribe(media, workdir, index)
+                if transcript:
+                    transcript_parts.append(f"Media video #{index} audio transcript:\n{transcript[:MAX_TRANSCRIPT_CHARS]}")
+                frame_ocr = await _ocr_video_frames(media, workdir, index)
+                if frame_ocr:
+                    ocr_parts.append(f"Media video #{index} frame OCR:\n{frame_ocr[:8000]}")
+
+        if transcript_parts:
+            text_parts.extend(transcript_parts)
+        if ocr_parts:
+            text_parts.extend(ocr_parts)
+
         evidence = "\n\n---\n\n".join(text_parts).strip()
         if not evidence:
             return {"status": "unknown", "message": "No readable text or media was found."}
@@ -375,25 +423,60 @@ async def _find_steam_match(query: str) -> dict | None:
         return None
 
 
-async def _download_url(url: str, workdir: Path) -> tuple[dict, Path | None]:
+async def _download_url(url: str, workdir: Path) -> tuple[dict, list[Path]]:
+    """Download all useful media from a social URL, including Instagram carousels."""
     if not _tool("yt-dlp"):
         raise RuntimeError("yt-dlp is not installed")
-    output = str(workdir / "source.%(ext)s")
-    command = ["yt-dlp", "--no-playlist", "--no-warnings", "--dump-single-json", "--write-info-json", "-o", output, url]
-    proc = await asyncio.to_thread(_run, command, 120)
+
+    instagram = _is_instagram_url(url)
+    output = str(workdir / ("instagram_%(playlist_index)03d.%(ext)s" if instagram else "source.%(ext)s"))
+
+    # First request metadata. Instagram posts/carousels are exposed by yt-dlp as
+    # entries; reels normally contain one entry. We intentionally allow playlists
+    # only for Instagram so YouTube URLs cannot unexpectedly expand into a playlist.
+    metadata_command = ["yt-dlp", "--no-warnings", "--dump-single-json"]
+    metadata_command.append("--yes-playlist" if instagram else "--no-playlist")
+    metadata_command += [url]
+    proc = await asyncio.to_thread(_run, metadata_command, 120)
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr[-1000:])
+        raise RuntimeError(proc.stderr[-1500:])
+
     try:
         metadata = json.loads(proc.stdout.strip().splitlines()[-1])
     except Exception:
         metadata = {}
-    command = ["yt-dlp", "--no-playlist", "--no-warnings", "-f", "bv*[ext=mp4]+ba/b[ext=mp4]/b", "-o", output, url]
-    proc = await asyncio.to_thread(_run, command, 180)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr[-1000:])
-    files = sorted(workdir.glob("source.*"), key=lambda p: p.stat().st_mtime, reverse=True)
-    media = next((p for p in files if p.suffix.lower() not in {".json", ".jpg", ".webp"}), None)
-    return metadata, media
+
+    download_command = [
+        "yt-dlp", "--no-warnings", "--ignore-errors", "--restrict-filenames",
+        "--yes-playlist" if instagram else "--no-playlist",
+        "-o", output,
+    ]
+    if instagram:
+        download_command += ["--playlist-end", str(MAX_SOCIAL_MEDIA_ITEMS)]
+    download_command += [url]
+
+    proc = await asyncio.to_thread(_run, download_command, 300)
+    if proc.returncode != 0 and not any(workdir.glob("instagram_*.mp4")):
+        raise RuntimeError(proc.stderr[-1500:])
+
+    patterns = ["instagram_*", "source.*"]
+    files = []
+    for pattern in patterns:
+        files.extend(workdir.glob(pattern))
+    files = sorted(
+        [p for p in files if p.is_file() and p.suffix.lower() not in {".json", ".part", ".ytdl"}],
+        key=lambda p: (p.name, p.stat().st_mtime),
+    )
+
+    # Deduplicate paths while preserving order.
+    seen = set()
+    media = []
+    for path in files:
+        if path not in seen:
+            seen.add(path)
+            media.append(path)
+
+    return metadata, media[:MAX_SOCIAL_MEDIA_ITEMS]
 
 
 async def _download_attachment(url: str, target: Path) -> None:
@@ -408,11 +491,11 @@ async def _download_attachment(url: str, target: Path) -> None:
                     file.write(chunk)
 
 
-async def _transcribe(video: Path, workdir: Path) -> str:
+async def _transcribe(video: Path, workdir: Path, index: int = 1) -> str:
     if not _tool("ffmpeg"):
         log("Game detector | ffmpeg not installed; skipping transcription")
         return ""
-    audio = workdir / "audio.wav"
+    audio = workdir / f"audio_{index}.wav"
     proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)], 120)
     if proc.returncode != 0 or not audio.exists():
         return ""
@@ -454,16 +537,40 @@ async def _ocr_image(image: Path) -> str:
         return ""
 
 
+async def _ocr_video_frames(video: Path, workdir: Path, index: int) -> str:
+    """Sample frames from every video so game titles/UI visible on screen are inspected."""
+    if not _tool("ffmpeg"):
+        return ""
+    frame_dir = workdir / f"frames_{index}"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    # Five representative frames catches title cards, gameplay UI and end cards
+    # without exploding processing time for a carousel of many videos.
+    proc = await asyncio.to_thread(_run, [
+        "ffmpeg", "-y", "-i", str(video), "-vf", "fps=1/3,scale=1280:-1",
+        "-frames:v", "5", str(frame_dir / "frame_%02d.jpg")
+    ], 120)
+    if proc.returncode != 0:
+        return ""
+    parts = []
+    for frame in sorted(frame_dir.glob("*.jpg")):
+        ocr = await _ocr_image(frame)
+        if ocr:
+            parts.append(f"{frame.name}:\n{ocr[:2500]}")
+    return "\n".join(parts)
+
+
 async def _ask_ollama(evidence: str) -> dict:
     prompt = f"""Identify ALL video games actually supported by this content.
 There may be multiple distinct games.
+Use ALL available evidence: captions/descriptions, audio transcripts, OCR from screenshots and video frames, and social-post metadata.
 Do not invent, infer sequels, or rename titles. A game must have meaningful evidence in the supplied content.
+If a title is misspelled in a transcript/OCR, infer the most likely real game title but preserve subtitles and editions when the evidence supports them.
 Return every distinct supported game, maximum {MAX_GAMES}.
 Return ONLY JSON: {{\"candidates\":[{{\"name\":\"Game title\",\"confidence\":0-100,\"reason\":\"short evidence\",\"evidence_type\":\"audio|caption|ocr|visual|other\"}}]}}
-CONTENT:\n{evidence[:30000]}"""
-    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict video-game identification assistant. Never hallucinate a title."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
+CONTENT:\n{evidence[:50000]}"""
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict video-game identification assistant. Use all supplied media evidence. Never hallucinate a title."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
     async with aiohttp.ClientSession() as session:
-        async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=180)) as response:
+        async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=240)) as response:
             response.raise_for_status()
             body = await response.json()
     content = body.get("message", {}).get("content", "")
