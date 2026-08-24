@@ -1,11 +1,9 @@
 """TheGamesDB platform verification and PC/console selection.
 
-The detector uses this as the platform authority:
-- a game must have at least one real console release to be accepted;
-- when a PC release exists, the PC release is the canonical version used by the queue;
-- all detected console platforms are retained for display in the queue panel.
-
-API key: THEGAMESDB_API_KEY environment variable or config.THEGAMESDB_API_KEY.
+Games must have at least one console release. If a PC release exists, PC is
+selected as the canonical/download platform. A platform suffix in user input
+(e.g. ``Zelda SNES`` or ``Skyrim PC``) is treated as an explicit platform
+constraint and only releases on that platform are considered.
 """
 
 from __future__ import annotations
@@ -36,8 +34,47 @@ _GAME_CACHE: dict[str, "TGDBGameInfo | None"] = {}
 _GAME_LOCK = asyncio.Lock()
 
 PC_NAMES = {
-    "pc", "windows", "microsoft windows", "windows pc", "steam", "linux", "mac os",
-    "macos", "macintosh", "dos", "ms-dos", "pc compatible", "steam deck",
+    "pc", "windows", "microsoft windows", "windows pc", "steam", "linux",
+    "mac os", "macos", "macintosh", "dos", "ms dos", "pc compatible",
+    "steam deck", "epic", "epic games", "battle net", "battlenet",
+}
+
+# User-facing aliases. TheGamesDB's actual platform names are still used for
+# the final comparison and display.
+PLATFORM_ALIASES = {
+    "pc": ("pc", "windows", "microsoft windows", "windows pc", "pc compatible", "steam", "steam deck", "linux", "mac os", "macos", "macintosh", "dos", "ms dos"),
+    "ps1": ("ps1", "playstation 1", "sony playstation", "playstation"),
+    "ps2": ("ps2", "playstation 2", "sony playstation 2"),
+    "ps3": ("ps3", "playstation 3", "sony playstation 3"),
+    "ps4": ("ps4", "playstation 4", "sony playstation 4"),
+    "ps5": ("ps5", "playstation 5", "sony playstation 5"),
+    "xbox": ("xbox", "xbox original", "original xbox"),
+    "xbox 360": ("xbox 360", "360"),
+    "xbox one": ("xbox one",),
+    "xbox series": ("xbox series", "series x", "series s", "series x s"),
+    "switch": ("switch", "nintendo switch"),
+    "wii": ("wii",),
+    "wii u": ("wii u",),
+    "gamecube": ("gamecube", "nintendo gamecube"),
+    "n64": ("n64", "nintendo 64"),
+    "nes": ("nes", "nintendo entertainment system"),
+    "snes": ("snes", "super nintendo", "super nes", "super nintendo entertainment system"),
+    "game boy": ("game boy", "gameboy", "gb"),
+    "game boy color": ("game boy color", "gameboy color", "gbc"),
+    "game boy advance": ("game boy advance", "gameboy advance", "gba"),
+    "ds": ("ds", "nintendo ds"),
+    "3ds": ("3ds", "nintendo 3ds"),
+    "genesis": ("genesis", "sega genesis", "mega drive", "sega mega drive"),
+    "dreamcast": ("dreamcast", "sega dreamcast"),
+    "saturn": ("saturn", "sega saturn"),
+    "game gear": ("game gear", "sega game gear"),
+    "arcade": ("arcade",),
+    "neo geo": ("neo geo", "neogeo"),
+    "atari 2600": ("atari 2600",),
+    "atari 5200": ("atari 5200",),
+    "atari 7800": ("atari 7800",),
+    "psp": ("psp", "playstation portable"),
+    "vita": ("vita", "ps vita", "playstation vita"),
 }
 
 CONSOLE_HINTS = (
@@ -61,6 +98,7 @@ class TGDBGameInfo:
     name: str
     pc_platform: TGDBPlatform | None
     console_platforms: tuple[TGDBPlatform, ...]
+    platform_hint: str | None = None
 
     @property
     def has_console(self) -> bool:
@@ -106,19 +144,70 @@ def _score(query: str, title: str) -> float:
 
 def _is_pc_platform(name: str) -> bool:
     normalized = _norm(name)
-    if normalized in PC_NAMES:
-        return True
-    return normalized.startswith("pc ") or normalized.endswith(" pc")
+    return normalized in {_norm(x) for x in PC_NAMES} or normalized.startswith("pc ") or normalized.endswith(" pc")
 
 
 def _is_console_platform(name: str, raw: dict[str, Any] | None = None) -> bool:
     raw = raw or {}
-    # TheGamesDB's platform model exposes a `console` field for console
-    # platforms. Prefer that authoritative field when present.
     if raw.get("console"):
         return True
     normalized = _norm(name)
     return any(hint in normalized for hint in CONSOLE_HINTS)
+
+
+def _extract_platform_hint(value: str) -> tuple[str, str | None]:
+    """Return (game query without suffix, canonical platform hint).
+
+    Only a platform expression at the beginning/end of the input is removed.
+    This avoids corrupting legitimate game titles containing words such as
+    'PC' in the middle.
+    """
+    original = str(value or "").strip()
+    if not original:
+        return "", None
+
+    normalized = _norm(original)
+    # Longest aliases first so 'playstation 3' wins over 'playstation'.
+    aliases: list[tuple[str, str]] = []
+    for canonical, values in PLATFORM_ALIASES.items():
+        for alias in values:
+            aliases.append((_norm(alias), canonical))
+    aliases.sort(key=lambda item: len(item[0]), reverse=True)
+
+    for alias, canonical in aliases:
+        if not alias:
+            continue
+        # Suffix form: "zelda snes", "skyrim pc", "zelda super nintendo".
+        if normalized == alias:
+            return "", canonical
+        if normalized.endswith(" " + alias):
+            base = normalized[: -(len(alias) + 1)].strip()
+            if base:
+                # Keep the original spelling for the actual TGDB query where
+                # possible; normalized text is safer for deterministic parsing.
+                words = original.split()
+                alias_words = alias.split()
+                if len(words) >= len(alias_words):
+                    return " ".join(words[: len(words) - len(alias_words)]).strip(), canonical
+                return base, canonical
+        # Prefix form is also accepted: "SNES Zelda".
+        if normalized.startswith(alias + " "):
+            base = normalized[len(alias) + 1 :].strip()
+            if base:
+                return base, canonical
+
+    return original, None
+
+
+def _platform_matches_hint(platform: TGDBPlatform, hint: str | None) -> bool:
+    if not hint:
+        return True
+    name = _norm(platform.name)
+    aliases = PLATFORM_ALIASES.get(hint, (hint,))
+    normalized_aliases = [_norm(alias) for alias in aliases]
+    if hint == "pc":
+        return _is_pc_platform(platform.name)
+    return any(name == alias or alias in name or name in alias for alias in normalized_aliases)
 
 
 async def _get_json(path: str, params: dict[str, Any]) -> dict[str, Any] | None:
@@ -174,17 +263,13 @@ async def _platforms_by_id(ids: list[int]) -> dict[int, TGDBPlatform]:
 
 
 async def verify_game(name: str) -> TGDBGameInfo | None:
-    """Resolve a game and require at least one console release.
-
-    The selected release is PC whenever TGDB reports a PC platform. Console
-    releases remain attached as metadata so the UI can show every supported
-    console without changing the download target.
-    """
-    query = str(name or "").strip()
-    key = _norm(query)
-    if not key:
-        return None
-    if not API_KEY:
+    """Resolve a game, optionally constrained to an explicit platform."""
+    original_query = str(name or "").strip()
+    query, platform_hint = _extract_platform_hint(original_query)
+    if not query:
+        query = original_query
+    key = f"{_norm(query)}|platform={platform_hint or '*'}"
+    if not query or not API_KEY:
         return None
     if key in _GAME_CACHE:
         return _GAME_CACHE[key]
@@ -192,6 +277,7 @@ async def verify_game(name: str) -> TGDBGameInfo | None:
     async with _GAME_LOCK:
         if key in _GAME_CACHE:
             return _GAME_CACHE[key]
+
         body = await _get_json(
             "/v1.1/Games/ByGameName",
             {
@@ -205,13 +291,10 @@ async def verify_game(name: str) -> TGDBGameInfo | None:
         games = ((body or {}).get("data") or {}).get("games") or []
         included = ((body or {}).get("include") or {}).get("platform") or {}
         included = included.get("data") or included or {}
-
         if not games:
             _GAME_CACHE[key] = None
             return None
 
-        # Resolve platform names from the included response first, then fetch
-        # any IDs the API returned without an included platform object.
         platform_ids = []
         for game in games:
             try:
@@ -232,7 +315,6 @@ async def verify_game(name: str) -> TGDBGameInfo | None:
                     console=_is_console_platform(name_value, raw),
                 )
 
-        # Group platform records under the best-matching canonical game title.
         ranked: list[tuple[float, dict[str, Any], TGDBPlatform]] = []
         for game in games:
             try:
@@ -243,33 +325,38 @@ async def verify_game(name: str) -> TGDBGameInfo | None:
             title = str(game.get("game_title") or "").strip()
             if not platform or not title:
                 continue
+            if platform_hint and not _platform_matches_hint(platform, platform_hint):
+                continue
             ranked.append((_score(query, title), game, platform))
 
         if not ranked:
+            log(f"TheGamesDB | no platform match | query={original_query!r} | hint={platform_hint!r}")
             _GAME_CACHE[key] = None
             return None
 
         best_score = max(score for score, _, _ in ranked)
-        # Keep close title matches only. This prevents e.g. a search for a game
-        # from inheriting platforms from an unrelated sequel/remake.
         title_rows = [(game, platform) for score, game, platform in ranked if score >= max(0.62, best_score - 0.08)]
         if not title_rows:
             _GAME_CACHE[key] = None
             return None
 
         canonical_game, _ = max(
-            [(game, platform) for game, platform in title_rows],
+            title_rows,
             key=lambda pair: _score(query, str(pair[0].get("game_title") or "")),
         )
         canonical_name = str(canonical_game.get("game_title") or query).strip()
 
-        # Keep only rows belonging to the canonical title, using normalized title
-        # equality plus a small fuzzy tolerance for punctuation/edition noise.
         same_title = []
         for game, platform in title_rows:
             title = str(game.get("game_title") or "").strip()
             if _norm(title) == _norm(canonical_name) or _score(canonical_name, title) >= 0.92:
                 same_title.append((game, platform))
+
+        # For an explicit platform, every retained row is already constrained.
+        # For normal input, preserve all console releases and prefer PC.
+        if platform_hint:
+            matching = [(game, platform) for game, platform in same_title if _platform_matches_hint(platform, platform_hint)]
+            same_title = matching
 
         pc_platform = next((platform for _, platform in same_title if _is_pc_platform(platform.name)), None)
         consoles: dict[int, TGDBPlatform] = {}
@@ -277,15 +364,22 @@ async def verify_game(name: str) -> TGDBGameInfo | None:
             if platform.console and not _is_pc_platform(platform.name):
                 consoles[platform.id] = platform
 
+        # Mandatory console support remains in force even when the user asked
+        # for PC. A PC-only TGDB entry is therefore not accepted.
         if not consoles:
             _GAME_CACHE[key] = None
-            log(f"TheGamesDB | rejected (no console) | query={query!r} | title={canonical_name!r}")
+            log(
+                f"TheGamesDB | rejected (no console) | query={original_query!r} | "
+                f"title={canonical_name!r} | hint={platform_hint!r}"
+            )
             return None
 
-        # PC is the canonical target when present; otherwise use the first console
-        # entry so console-only games remain valid.
         selected_game_id = next(
-            (int(game.get("id")) for game, platform in same_title if pc_platform and platform.id == pc_platform.id and str(game.get("id", "")).isdigit()),
+            (
+                int(game.get("id"))
+                for game, platform in same_title
+                if pc_platform and platform.id == pc_platform.id and str(game.get("id", "")).isdigit()
+            ),
             None,
         )
         if selected_game_id is None:
@@ -302,10 +396,12 @@ async def verify_game(name: str) -> TGDBGameInfo | None:
             name=canonical_name,
             pc_platform=pc_platform,
             console_platforms=tuple(sorted(consoles.values(), key=lambda p: p.name.casefold())),
+            platform_hint=platform_hint,
         )
         _GAME_CACHE[key] = result
         log(
-            f"TheGamesDB | verified | query={query!r} | title={result.name!r} | "
+            f"TheGamesDB | verified | query={original_query!r} | title={result.name!r} | "
+            f"hint={platform_hint or 'any'} | selected={result.selected_platform_name!r} | "
             f"pc={result.pc_platform.name if result.pc_platform else 'no'} | "
             f"consoles={', '.join(result.console_names)}"
         )
@@ -326,4 +422,5 @@ async def annotate_game(game: dict) -> dict | None:
     item["console_platforms"] = info.console_names
     item["console_names"] = info.console_names
     item["has_console"] = True
+    item["platform_hint"] = info.platform_hint
     return item
