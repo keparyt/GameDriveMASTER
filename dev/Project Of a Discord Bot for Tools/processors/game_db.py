@@ -3,9 +3,11 @@ import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+from config import KEPAR_DB_URL_PREFIX
 from utils.helper import log
 
 DB_FILE = Path(__file__).resolve().parent.parent / "sdb.html"
@@ -39,6 +41,33 @@ def _match_key(value: str) -> str:
     ).strip()
 
 
+def _resolve_db_url(href: str) -> str:
+    """Resolve an sdb.html hyperlink using the configured DB prefix.
+
+    The snapshot can contain relative paths such as /games/foo or games/foo.
+    They become https://kepardb.com/games/foo when the default prefix is used.
+    If a full URL is present, its path is still mapped to the configured DB
+    host so the snapshot remains portable between the original DB and the
+    public redirect domain.
+    """
+    href = href.strip()
+    prefix = KEPAR_DB_URL_PREFIX.rstrip("/")
+    if not href:
+        return ""
+
+    if href.startswith("//"):
+        href = "https:" + href
+
+    if re.match(r"^https?://", href, re.IGNORECASE):
+        # Keep the path/query/fragment but use the configured database host.
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(href)
+        return urlunsplit((urlsplit(prefix).scheme, urlsplit(prefix).netloc, parts.path, parts.query, parts.fragment))
+
+    # urljoin handles both /game and game paths correctly.
+    return urljoin(prefix + "/", href.lstrip("/"))
+
+
 async def refresh_game_database(force: bool = False) -> list[GameDBEntry]:
     global _cache, _cache_signature
 
@@ -61,14 +90,12 @@ async def refresh_game_database(force: bool = False) -> list[GameDBEntry]:
         for item in soup.select(".az-list-item"):
             for anchor in item.find_all("a", href=True):
                 name = " ".join(anchor.stripped_strings)
-                url = anchor.get("href", "").strip()
-                if not name or not url:
+                href = anchor.get("href", "").strip()
+                if not name or not href:
                     continue
-                if url.startswith("/"):
-                    url = "https://kepargamedb.com" + url
-                elif url.startswith("//"):
-                    url = "https:" + url
-                if not url.startswith(("http://", "https://")) or url in seen_urls:
+
+                url = _resolve_db_url(href)
+                if not url or url in seen_urls:
                     continue
                 seen_urls.add(url)
                 entries.append(GameDBEntry(name=name, url=url))
@@ -76,6 +103,7 @@ async def refresh_game_database(force: bool = False) -> list[GameDBEntry]:
         _cache = entries
         _cache_signature = signature
         log(f"GameDB | loaded {len(entries)} game links from {DB_FILE.name}")
+        log(f"GameDB | URL prefix: {KEPAR_DB_URL_PREFIX}")
         return _cache
 
 
@@ -90,7 +118,8 @@ async def find_game(game_name: str) -> GameDBEntry | None:
         return exact[0]
 
     contained = [
-        entry for entry in entries
+        entry
+        for entry in entries
         if query in _match_key(entry.name) or _match_key(entry.name) in query
     ]
     if contained:
