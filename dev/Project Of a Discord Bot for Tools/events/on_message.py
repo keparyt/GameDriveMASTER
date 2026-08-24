@@ -50,7 +50,11 @@ class GameSelectionView(discord.ui.View):
         selected = [self.games[int(value)] for value in self.select.values]
         already_installed = [g for g in selected if normalize_game_name(str(g.get("name", ""))) in self.installed_names]
         to_queue = [g for g in selected if g not in already_installed]
-        added = await add_games(to_queue)
+        added = await add_games(
+            to_queue,
+            requester_id=interaction.user.id,
+            requester_name=interaction.user.display_name,
+        )
         await self.cog.refresh_queue_panel()
         parts = []
         if added:
@@ -116,6 +120,14 @@ class OnMessage(commands.Cog):
             log(f"Queue panel history error | {type(exc).__name__}: {exc}")
         return None
 
+    @staticmethod
+    def requester_text(game: dict) -> str:
+        name = game.get("requester_name") or game.get("requester_id") or "Unknown"
+        requester_id = game.get("requester_id")
+        if requester_id:
+            return f"<@{requester_id}>"
+        return str(name)[:40]
+
     async def refresh_queue_panel(self):
         channel = self.bot.get_channel(GAME_QUEUE_CHANNEL_ID)
         if channel is None:
@@ -130,7 +142,8 @@ class OnMessage(commands.Cog):
             url = game.get("library_url") or game.get("kepargamedb_url") or game.get("steam_url")
             shown = f"[{name}]({url})" if url else name
             source = "KeparGameDB" if game.get("library_source") == "kepargamedb" else "Steam"
-            lines.append(f"**#{queue_id} — {shown}** · `{source}`")
+            requester = self.requester_text(game)
+            lines.append(f"**#{queue_id} — {shown}** · `{source}` · requested by {requester}")
         description = "Games selected by users that still need to be downloaded.\n\n"
         description += "\n".join(lines[:50]) if lines else "No games are currently waiting."
         embed = discord.Embed(title=QUEUE_PANEL_TITLE, description=description[:4096])
