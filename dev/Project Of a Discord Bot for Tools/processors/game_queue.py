@@ -5,6 +5,7 @@ from pathlib import Path
 
 QUEUE_FILE = Path("data/game_download_queue.json")
 HISTORY_FILE = Path("data/game_download_history.json")
+BLACKLIST_FILE = Path("data/game_download_blacklist.json")
 _lock = asyncio.Lock()
 
 
@@ -23,6 +24,10 @@ def _save(path: Path, items: list[dict]) -> None:
     temporary.replace(path)
 
 
+def _normalize(name: str) -> str:
+    return " ".join(str(name).casefold().strip().split())
+
+
 def _next_id(queue: list[dict], history: list[dict]) -> int:
     ids = []
     for item in queue + history:
@@ -38,22 +43,49 @@ async def list_queue() -> list[dict]:
         return _load(QUEUE_FILE)
 
 
+async def check_blacklist(game_name: str) -> dict | None:
+    wanted = _normalize(game_name)
+    async with _lock:
+        blacklist = _load(BLACKLIST_FILE)
+        for item in blacklist:
+            name = _normalize(item.get("name", ""))
+            if name == wanted:
+                return item
+        return None
+
+
 async def add_games(
     games: list[dict],
     requester_id: int | None = None,
     requester_name: str | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
+    """Add games while refusing blacklisted titles.
+
+    Returns (added, blocked). Blocked entries include the blacklist reason so
+    the caller can tell the requester exactly why they were refused.
+    """
     async with _lock:
         queue = _load(QUEUE_FILE)
         history = _load(HISTORY_FILE)
-        existing = {str(item.get("name", "")).casefold().strip() for item in queue}
+        blacklist = _load(BLACKLIST_FILE)
+        blacklisted = {_normalize(item.get("name", "")): item for item in blacklist}
+        existing = {_normalize(item.get("name", "")) for item in queue}
         added = []
+        blocked = []
         next_id = _next_id(queue, history)
         requested_at = datetime.now(timezone.utc).isoformat()
 
         for game in games:
-            key = str(game.get("name", "")).casefold().strip()
-            if not key or key in existing:
+            name = str(game.get("name", "")).strip()
+            key = _normalize(name)
+            if not key:
+                continue
+            if key in blacklisted:
+                blocked_item = dict(blacklisted[key])
+                blocked_item["attempted_name"] = name
+                blocked.append(blocked_item)
+                continue
+            if key in existing:
                 continue
             item = {
                 "id": next_id,
@@ -75,7 +107,7 @@ async def add_games(
             next_id += 1
 
         _save(QUEUE_FILE, queue)
-        return added
+        return added, blocked
 
 
 async def resolve_queue_item(identifier: str) -> dict | None:
@@ -86,14 +118,15 @@ async def resolve_queue_item(identifier: str) -> dict | None:
             wanted_id = int(value)
             return next((item for item in queue if int(item.get("id", -1)) == wanted_id), None)
 
-        wanted = value.casefold()
-        exact = next((item for item in queue if str(item.get("name", "")).casefold().strip() == wanted), None)
+        wanted = _normalize(value)
+        exact = next((item for item in queue if _normalize(item.get("name", "")) == wanted), None)
         if exact:
             return exact
-        return next((item for item in queue if wanted in str(item.get("name", "")).casefold()), None)
+        return next((item for item in queue if wanted in _normalize(item.get("name", ""))), None)
 
 
-async def complete_queue_item(identifier: str, action: str, reason: str = "") -> dict | None:
+async def remove_queue_item(identifier: str, reason: str = "") -> dict | None:
+    """Remove an item from the active queue without blacklisting it."""
     async with _lock:
         queue = _load(QUEUE_FILE)
         history = _load(HISTORY_FILE)
@@ -107,14 +140,14 @@ async def complete_queue_item(identifier: str, action: str, reason: str = "") ->
                     target_index = index
                     break
         else:
-            wanted = value.casefold()
+            wanted = _normalize(value)
             for index, item in enumerate(queue):
-                if str(item.get("name", "")).casefold().strip() == wanted:
+                if _normalize(item.get("name", "")) == wanted:
                     target_index = index
                     break
             if target_index is None:
                 for index, item in enumerate(queue):
-                    if wanted in str(item.get("name", "")).casefold():
+                    if wanted in _normalize(item.get("name", "")):
                         target_index = index
                         break
 
@@ -122,10 +155,51 @@ async def complete_queue_item(identifier: str, action: str, reason: str = "") ->
             return None
 
         item = queue.pop(target_index)
-        item["action"] = action
+        item["action"] = "removed"
         item["reason"] = reason
         item["resolved_at"] = datetime.now(timezone.utc).isoformat()
         history.append(item)
         _save(QUEUE_FILE, queue)
         _save(HISTORY_FILE, history)
         return item
+
+
+async def blacklist_game(identifier: str, reason: str) -> dict | None:
+    """Blacklist a game and remove any matching active queue entry."""
+    async with _lock:
+        queue = _load(QUEUE_FILE)
+        blacklist = _load(BLACKLIST_FILE)
+        value = identifier.strip()
+        target_index = None
+
+        if value.isdigit():
+            wanted_id = int(value)
+            for index, item in enumerate(queue):
+                if int(item.get("id", -1)) == wanted_id:
+                    target_index = index
+                    break
+        else:
+            wanted = _normalize(value)
+            for index, item in enumerate(queue):
+                if _normalize(item.get("name", "")) == wanted:
+                    target_index = index
+                    break
+
+        if target_index is not None:
+            item = queue.pop(target_index)
+        else:
+            item = {"name": identifier}
+
+        name = str(item.get("name", identifier)).strip()
+        record = {
+            "name": name,
+            "reason": reason,
+            "blacklisted_at": datetime.now(timezone.utc).isoformat(),
+            "blacklisted_by": item.get("blacklisted_by"),
+        }
+
+        blacklist = [x for x in blacklist if _normalize(x.get("name", "")) != _normalize(name)]
+        blacklist.append(record)
+        _save(BLACKLIST_FILE, blacklist)
+        _save(QUEUE_FILE, queue)
+        return record
