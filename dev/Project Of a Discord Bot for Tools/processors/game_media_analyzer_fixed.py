@@ -6,7 +6,7 @@ Adds deterministic extraction for title-card layouts such as:
     ONIRISM (4 PLAYER) Co-Op 3D Action Adventure
 
 The existing analyzer remains responsible for media downloading, OCR, vision,
-verification and UI result formatting. This wrapper only strengthens the title
+verification and UI result formatting. This module only strengthens the title
 extraction stage so descriptive text cannot replace the actual title.
 """
 
@@ -15,8 +15,8 @@ import re
 from processors import game_media_analyzer as _base
 from utils.helper import log
 
+_ORIGINAL_IDENTIFY_FROM_EVIDENCE = _base._identify_from_evidence
 
-# Words that frequently appear immediately after a real title on game-list cards.
 _DESCRIPTOR_START = re.compile(
     r"\b(?:co[ -]?op|coop|multiplayer|single[ -]?player|split[ -]?screen|"
     r"romantic|action|adventure|puzzle|open[ -]?world|3d|2d|platformer|"
@@ -55,7 +55,6 @@ def _title_hints_from_evidence(evidence: str) -> list[dict]:
     hints: list[dict] = []
     seen: set[str] = set()
 
-    # OCR is grouped by frame, so inspect individual lines as well as nearby text.
     for raw_line in str(evidence or "").splitlines():
         line = _normalize_ocr_line(raw_line)
         if not line or line.lower().startswith(("frame_", "video #", "image #")):
@@ -69,7 +68,6 @@ def _title_hints_from_evidence(evidence: str) -> list[dict]:
             match = _TITLE_DESCRIPTOR.match(line)
             if match:
                 descriptor = match.group("descriptor")
-                # Only split on ':'/'-' when the right side looks like a descriptor.
                 if _DESCRIPTOR_START.search(descriptor):
                     title = _clean_title(match.group("title"))
 
@@ -105,7 +103,7 @@ async def _identify_from_evidence(evidence: str) -> dict:
         )
         log("Game detector title-card hints | " + ", ".join(item["name"] for item in hints))
 
-    ai = await _base._identify_from_evidence(evidence)
+    ai = await _ORIGINAL_IDENTIFY_FROM_EVIDENCE(evidence)
     raw = ai.get("candidates", []) if isinstance(ai, dict) else []
 
     # Hints are primary-media evidence. Merge them first so an LLM that returns
@@ -126,8 +124,7 @@ async def _identify_from_evidence(evidence: str) -> dict:
 
 
 async def analyze_game_input(data: dict) -> dict:
-    # Patch only the extraction callback for this invocation. The base analyzer
-    # still performs all existing OCR, media, verification and result handling.
+    # Compatibility wrapper for callers that import this module directly.
     original = _base._identify_from_evidence
     _base._identify_from_evidence = _identify_from_evidence
     try:
