@@ -40,11 +40,6 @@ class OnMessage(commands.Cog):
                 result = await process_game_message(message)
 
             if result is None:
-                await message.reply(
-                    "I couldn't find a supported link or video attachment to analyze. "
-                    "Send an Instagram/TikTok URL or upload a video.",
-                    mention_author=False,
-                )
                 return
 
             await message.reply(
@@ -58,7 +53,7 @@ class OnMessage(commands.Cog):
                 f"{type(error).__name__}: {error}"
             )
             await message.reply(
-                "Something went wrong while analyzing that post.",
+                "Something went wrong while analyzing that content.",
                 mention_author=False,
             )
 
@@ -77,25 +72,36 @@ class OnMessage(commands.Cog):
             description=result.get("message", "No result yet."),
         )
 
-        source = result.get("source")
-        if source:
-            embed.add_field(name="Source", value=source, inline=True)
-
-        attachment_count = result.get("attachment_count")
-        if attachment_count is not None:
+        sources = result.get("sources", [])
+        if sources:
             embed.add_field(
-                name="Video attachments",
-                value=str(attachment_count),
-                inline=True,
+                name="Detected input",
+                value="\n".join(f"• {source}" for source in sources)[:1024],
+                inline=False,
             )
 
-        detected_url = result.get("url")
-        if detected_url:
-            # Avoid Discord embed field overflow with unusually long URLs.
+        text = result.get("text")
+        if text:
             embed.add_field(
-                name="Detected link",
-                value=detected_url[:1024],
+                name="Text received",
+                value=text[:1024],
                 inline=False,
+            )
+
+        detected_urls = result.get("urls", [])
+        if detected_urls:
+            embed.add_field(
+                name="Detected links",
+                value="\n".join(detected_urls)[:1024],
+                inline=False,
+            )
+
+        attachment_count = result.get("attachment_count")
+        if attachment_count:
+            embed.add_field(
+                name="Attachments",
+                value=str(attachment_count),
+                inline=True,
             )
 
         return embed
