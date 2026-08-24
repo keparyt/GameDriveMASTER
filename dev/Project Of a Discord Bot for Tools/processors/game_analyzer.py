@@ -9,6 +9,7 @@ from pathlib import Path
 
 import aiohttp
 
+from processors.game_db import enrich_games
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
@@ -26,7 +27,6 @@ def _tool(name: str) -> str | None:
 
 
 async def analyze_game_input(data: dict) -> dict:
-    """Turn normalized Discord input into one or more identified games."""
     workdir = Path(tempfile.mkdtemp(prefix="game-detector-"))
     try:
         text_parts = []
@@ -72,22 +72,17 @@ async def analyze_game_input(data: dict) -> dict:
 
         ai = await _ask_ollama(evidence)
         candidates = ai.get("candidates", []) if isinstance(ai, dict) else []
-        candidates = [c for c in candidates if isinstance(c, dict) and c.get("name")]
-        candidates = candidates[:MAX_GAMES]
-
+        candidates = [c for c in candidates if isinstance(c, dict) and c.get("name")][:MAX_GAMES]
         if not candidates:
             return {"status": "unknown", "message": "I couldn't identify a game from the available evidence."}
 
         verified = await _verify_steam(candidates)
-        games = verified[:MAX_GAMES] or candidates[:MAX_GAMES]
+        games = await enrich_games(verified[:MAX_GAMES] or candidates[:MAX_GAMES])
 
-        # A post can legitimately contain multiple games. Do not collapse the
-        # result to a single "best" game.
         return {
             "status": "identified",
             "game_count": len(games),
             "games": games,
-            # Keep the first game for compatibility with older callers.
             "game_name": games[0].get("name"),
             "confidence": float(games[0].get("confidence", 0)),
             "steam_url": games[0].get("steam_url"),
@@ -103,11 +98,7 @@ async def _download_url(url: str, workdir: Path) -> tuple[dict, Path | None]:
         raise RuntimeError("yt-dlp is not installed")
 
     output = str(workdir / "source.%(ext)s")
-    command = [
-        "yt-dlp", "--no-playlist", "--no-warnings",
-        "--dump-single-json", "--write-info-json",
-        "-o", output, url,
-    ]
+    command = ["yt-dlp", "--no-playlist", "--no-warnings", "--dump-single-json", "--write-info-json", "-o", output, url]
     proc = await asyncio.to_thread(_run, command, 120)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr[-1000:])
@@ -117,11 +108,7 @@ async def _download_url(url: str, workdir: Path) -> tuple[dict, Path | None]:
     except Exception:
         metadata = {}
 
-    command = [
-        "yt-dlp", "--no-playlist", "--no-warnings",
-        "-f", "bv*[ext=mp4]+ba/b[ext=mp4]/b",
-        "-o", output, url,
-    ]
+    command = ["yt-dlp", "--no-playlist", "--no-warnings", "-f", "bv*[ext=mp4]+ba/b[ext=mp4]/b", "-o", output, url]
     proc = await asyncio.to_thread(_run, command, 180)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr[-1000:])
@@ -149,9 +136,7 @@ async def _transcribe(video: Path, workdir: Path) -> str:
         return ""
 
     audio = workdir / "audio.wav"
-    proc = await asyncio.to_thread(_run, [
-        "ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)
-    ], 120)
+    proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)], 120)
     if proc.returncode != 0 or not audio.exists():
         return ""
 
@@ -238,22 +223,19 @@ async def _verify_steam(candidates: list[dict]) -> list[dict]:
                     html = await response.text()
                 match = re.search(r'data-ds-appid="(\d+)"[^>]*>.*?<span class="title">([^<]+)</span>', html, re.DOTALL | re.IGNORECASE)
                 if match:
-                    steam_name = re.sub(r"\s+", " ", match.group(2)).strip()
                     candidate = dict(candidate)
-                    candidate["name"] = steam_name
+                    candidate["name"] = re.sub(r"\s+", " ", match.group(2)).strip()
                     candidate["steam_appid"] = int(match.group(1))
                     candidate["steam_url"] = f"https://store.steampowered.com/app/{match.group(1)}/"
                     candidate["confidence"] = min(100, float(candidate.get("confidence", 0)) + 10)
                     candidate["steam_verified"] = True
-                    results.append(candidate)
                 else:
                     candidate = dict(candidate)
                     candidate["steam_verified"] = False
-                    results.append(candidate)
+                results.append(candidate)
             except Exception as exc:
                 log(f"Steam verification error | {name} | {type(exc).__name__}: {exc}")
                 candidate = dict(candidate)
                 candidate["steam_verified"] = False
                 results.append(candidate)
-
     return sorted(results, key=lambda x: float(x.get("confidence", 0)), reverse=True)
