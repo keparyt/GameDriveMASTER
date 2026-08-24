@@ -21,6 +21,14 @@ def normalize_game_name(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def console_text(game: dict) -> str:
+    consoles = game.get("console_platforms") or game.get("console_names") or []
+    if isinstance(consoles, str):
+        consoles = [consoles]
+    consoles = [str(x).strip() for x in consoles if str(x).strip()]
+    return ", ".join(dict.fromkeys(consoles))
+
+
 class GameSelectionView(discord.ui.View):
     def __init__(self, cog, games: list[dict], installed_names: set[str]):
         super().__init__(timeout=300)
@@ -31,7 +39,10 @@ class GameSelectionView(discord.ui.View):
         for index, game in enumerate(games[:25]):
             name = str(game.get("name", "Unknown game"))[:100]
             installed = normalize_game_name(name) in installed_names
-            options.append(discord.SelectOption(label=name, value=str(index), description="Already installed" if installed else f"{float(game.get('confidence', 0)):.0f}% confidence", emoji="✅" if installed else "🎮"))
+            platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
+            consoles = console_text(game)
+            description = "Already installed" if installed else f"{platform} • {len(consoles.split(', ')) if consoles else 0} console(s)"
+            options.append(discord.SelectOption(label=name, value=str(index), description=description[:100], emoji="✅" if installed else "🎮"))
         self.select = discord.ui.Select(placeholder="Choose the game(s) to add to the download queue...", min_values=0, max_values=max(1, len(options)), options=options)
         self.select.callback = self.select_games
         self.add_item(self.select)
@@ -131,14 +142,21 @@ class OnMessage(commands.Cog):
         for index, game in enumerate(pending, start=1):
             queue_id = game.get("id", index)
             name = str(game.get("name", "Unknown game"))
-            url = game.get("library_url") or game.get("kepargamedb_url") or game.get("steam_url")
+            url = game.get("library_url") or game.get("kepargamedb_url") or game.get("steam_url") or game.get("tgdb_url")
             shown = f"[{name}]({url})" if url else name
-            source = "KeparGameDB" if game.get("library_source") == "kepargamedb" else "Steam"
+            source = {
+                "kepargamedb": "KeparGameDB",
+                "steam": "Steam",
+                "thegamesdb": "TheGamesDB",
+            }.get(game.get("library_source"), str(game.get("library_source") or "GameDB"))
             requester = self.requester_text(game)
-            lines.append(f"**#{queue_id} — {shown}** · `{source}` · requested by {requester}")
+            selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
+            consoles = console_text(game)
+            platform_suffix = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
+            lines.append(f"**#{queue_id} — {shown}** · `{source}` · {platform_suffix} · requested by {requester}")
         description = "Games selected by users that still need to be downloaded.\n\n" + ("\n".join(lines[:50]) if lines else "No games are currently waiting.")
         embed = discord.Embed(title=QUEUE_PANEL_TITLE, description=description[:4096])
-        embed.set_footer(text=f"{len(pending)} game(s) waiting • Installed games are checked against channel {INSTALLED_GAMES_CHANNEL_ID}")
+        embed.set_footer(text=f"{len(pending)} game(s) waiting • PC is prioritized when available • Console support is required")
         panel = await self._find_existing_panel(channel)
         if panel:
             try:
@@ -195,10 +213,13 @@ class OnMessage(commands.Cog):
         lines = []
         for index, game in enumerate(games, start=1):
             name = str(game.get("name", "Unknown game"))
-            url = game.get("steam_url") or game.get("kepargamedb_url") or game.get("library_url")
+            url = game.get("steam_url") or game.get("kepargamedb_url") or game.get("library_url") or game.get("tgdb_url")
             shown = f"[{name}]({url})" if url else name
             state = "**Already installed**" if normalize_game_name(name) in installed_names else f"{float(game.get('confidence', 0)):.0f}%"
-            lines.append(f"**{index}. {shown}** — {state}")
+            selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
+            consoles = console_text(game)
+            platform = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
+            lines.append(f"**{index}. {shown}** — {state} · {platform}")
         for start in range(0, len(lines), 15):
             embed.add_field(name="Detected games" if start == 0 else "More games", value="\n".join(lines[start:start + 15])[:1024], inline=False)
 
