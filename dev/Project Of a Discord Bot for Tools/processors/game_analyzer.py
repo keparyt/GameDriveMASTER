@@ -119,43 +119,36 @@ def _credible_name_match(query: str, title: str, threshold: float) -> bool:
 
 
 async def _deepseek_correct_name(name: str) -> str:
-    """Correct typos while preserving every meaningful title word/subtitle from the input."""
-    prompt = f"""You are correcting a user's misspelled video game title.
+    """Normalize a candidate to the most likely real game title without dropping subtitles."""
+    prompt = f"""Correct this possible video game title into the most likely REAL store title.
 
-USER INPUT:
+INPUT:
 {name}
 
-Your task:
-1. Correct spelling, phonetic spelling, missing apostrophes, plurals, and obvious typing mistakes.
-2. PRESERVE EVERY MEANINGFUL GAME-TITLE WORD from the input. Do not shorten the title.
-3. If the input contains a recognizable subtitle or distinctive phrase such as 'security breach', KEEP IT.
-4. You may restore missing small words such as 'of', 'the', 'at', etc. when they are clearly part of the real title.
-5. You may correct singular/plural forms when the real title requires it.
-6. Do NOT substitute the input with a more famous base game if the input clearly describes a specific subtitle/entry.
-7. Do NOT invent a sequel, remake, edition, or unrelated game.
-8. The result must be the most likely REAL video game title that preserves the meaning of the input.
-9. If the input is already correct, return it unchanged.
-10. If genuinely uncertain, return the input unchanged.
+Rules:
+- Fix spelling, phonetic spelling, missing apostrophes, plurals, abbreviations and obvious typing mistakes.
+- Preserve every meaningful word and subtitle from the input.
+- Never shorten a specific game to its base franchise/game.
+- If the input contains a recognizable subtitle, preserve it.
+- Expand obvious shorthand when it clearly identifies a known game.
+- Correct roman numerals/numbers when the official title uses them.
+- Resolve an obvious informal title when there is one overwhelmingly likely real game.
+- Do NOT invent a sequel, remake, edition, or unrelated game.
+- Do NOT substitute a more famous game merely because it is similar.
+- If genuinely uncertain, return the input unchanged.
+- Output ONLY the corrected game title.
 
 Examples:
-- 'hello neigbour' -> 'Hello Neighbor'
-- 'five night a fweddy secu breach' -> "Five Nights at Freddy's: Security Breach"
-- 'five nights freddy security breach' -> "Five Nights at Freddy's: Security Breach"
-- 'elden ring' -> 'Elden Ring'
-
-Return ONLY the corrected game title. No explanation. No quotes.
+hello neigbour -> Hello Neighbor
+five night a fweddy secu breach -> Five Nights at Freddy's: Security Breach
+civilization 7 -> Sid Meier's Civilization VII
+stalker 2 -> S.T.A.L.K.E.R. 2: Heart of Chornobyl
+arc 2 -> ARC Raiders
+elden ring -> Elden Ring
 
 INPUT: {name}
 """
-    payload = {
-        "model": OLLAMA_MODEL,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": "Correct video game names precisely. Preserve meaningful subtitles and never collapse a specific game into its base series title."},
-            {"role": "user", "content": prompt},
-        ],
-        "options": {"temperature": 0},
-    }
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "Correct video game names precisely. Preserve meaningful subtitles and prefer the exact real store title. Never hallucinate unrelated games."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
@@ -235,7 +228,23 @@ async def analyze_game_input(data: dict) -> dict:
         candidates = _dedupe_candidates(ai.get("candidates", []) if isinstance(ai, dict) else [])
         if not candidates:
             return {"status": "unknown", "message": "I couldn't identify a game from the available evidence."}
-        games, unresolved = await _verify_and_enrich(candidates)
+        # Normalize every AI candidate before verification. This is especially useful
+        # for video lists where DeepSeek may return shorthand such as Civilization 7,
+        # Arc 2, or Stalker 2 instead of the exact store title.
+        corrected_candidates = []
+        for candidate in candidates:
+            original = str(candidate.get("name", "")).strip()
+            corrected = await _deepseek_correct_name(original)
+            item = dict(candidate)
+            item["detected_name"] = original
+            item["name"] = corrected
+            changed = normalize_name(original) != normalize_name(corrected)
+            item["correction"] = corrected if changed else None
+            item["ai_correction_confidence"] = _correction_confidence(original, corrected) if changed else float(candidate.get("confidence", 100))
+            if changed:
+                item["reason"] = f"DeepSeek title normalization: {original} → {corrected}"
+            corrected_candidates.append(item)
+        games, unresolved = await _verify_and_enrich(corrected_candidates)
         return _result(games, unresolved)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -253,7 +262,7 @@ def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     if unresolved:
         names = ", ".join(item["name"] for item in unresolved)
         message = f"{len(games)} game(s) verified. Could not verify: {names}. Please provide direct Steam or KeparDB store page links."
-    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": message}
+    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("ai_correction_confidence", first.get("confidence", 0))), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": message}
 
 
 async def _extract_direct_text(text: str) -> list[dict]:
@@ -315,7 +324,7 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
             item["correction"] = steam_match["name"] if normalize_name(item["detected_name"]) != normalize_name(steam_match["name"]) else None
             if item.get("correction"):
                 item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], steam_match["name"])
-                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {steam_match['name']}"
+                item["reason"] = f"DeepSeek title correction: {item['detected_name']} → {steam_match['name']}"
                 item["confidence"] = item["ai_correction_confidence"]
             verified.append(item)
             continue
@@ -333,11 +342,11 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
             item["correction"] = db_match.name if normalize_name(item["detected_name"]) != normalize_name(db_match.name) else None
             if item.get("correction"):
                 item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], db_match.name)
-                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {db_match.name}"
+                item["reason"] = f"DeepSeek title correction: {item['detected_name']} → {db_match.name}"
                 item["confidence"] = item["ai_correction_confidence"]
             verified.append(item)
             continue
-        unresolved.append({"name": candidate.get("detected_name", original_name), "detected_name": candidate.get("detected_name", original_name), "confidence": float(candidate.get("confidence", 0)), "reason": "No sufficiently reliable Steam or KeparDB match.", "requires_store_link": True})
+        unresolved.append({"name": candidate.get("detected_name", original_name), "detected_name": candidate.get("detected_name", original_name), "confidence": float(candidate.get("ai_correction_confidence", candidate.get("confidence", 0))), "reason": "No sufficiently reliable Steam or KeparDB match.", "requires_store_link": True})
     return verified[:MAX_GAMES], unresolved
 
 
