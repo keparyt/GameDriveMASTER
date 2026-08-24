@@ -3,12 +3,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config import BLACKLIST_FILE, HISTORY_FILE, QUEUE_FILE
 from processors.game_db import find_local_game
 
-QUEUE_FILE = Path("data/game_download_queue.json")
-HISTORY_FILE = Path("data/game_download_history.json")
-BLACKLIST_FILE = Path("data/game_download_blacklist.json")
 _lock = asyncio.Lock()
+
+
+def _path(value: str) -> Path:
+    return Path(value)
 
 
 def _load(path: Path) -> list[dict]:
@@ -41,7 +43,7 @@ def _next_id(queue: list[dict], history: list[dict]) -> int:
 
 
 async def _resolve_queue_url(game: dict) -> tuple[str | None, str | None]:
-    """Prefer the canonical local sdb.html URL, otherwise keep the original URL."""
+    """Prefer sdb.html, otherwise preserve the analyzer's original URL."""
     name = str(game.get("name", "")).strip()
     if name:
         try:
@@ -49,7 +51,6 @@ async def _resolve_queue_url(game: dict) -> tuple[str | None, str | None]:
             if sdb_match and sdb_match.url:
                 return sdb_match.url, "kepardb"
         except Exception:
-            # URL resolution must never prevent a game from being queued.
             pass
 
     original_url = (
@@ -64,13 +65,8 @@ async def _resolve_queue_url(game: dict) -> tuple[str | None, str | None]:
 
 
 async def list_queue() -> list[dict]:
-    """Return queue entries using SDB first, with the stored URL as fallback.
-
-    This also upgrades old queue records whenever the local sdb.html contains a
-    better/canonical URL for the game.
-    """
     async with _lock:
-        queue = _load(QUEUE_FILE)
+        queue = _load(_path(QUEUE_FILE))
         changed = False
         for item in queue:
             queue_url, queue_source = await _resolve_queue_url(item)
@@ -81,46 +77,31 @@ async def list_queue() -> list[dict]:
                 item["library_source"] = queue_source or item.get("library_source") or "original"
                 changed = True
             elif queue_url and item.get("library_url") != queue_url:
-                # Keep the existing queue-panel renderer pointed at the resolved URL.
                 item["library_url"] = queue_url
                 item["library_source"] = queue_source or item.get("library_source") or "original"
                 changed = True
         if changed:
-            _save(QUEUE_FILE, queue)
+            _save(_path(QUEUE_FILE), queue)
         return queue
 
 
 async def check_blacklist(game_name: str) -> dict | None:
     wanted = _normalize(game_name)
     async with _lock:
-        blacklist = _load(BLACKLIST_FILE)
-        for item in blacklist:
-            name = _normalize(item.get("name", ""))
-            if name == wanted:
+        for item in _load(_path(BLACKLIST_FILE)):
+            if _normalize(item.get("name", "")) == wanted:
                 return item
-        return None
+    return None
 
 
-async def add_games(
-    games: list[dict],
-    requester_id: int | None = None,
-    requester_name: str | None = None,
-) -> tuple[list[dict], list[dict]]:
-    """Add games while refusing blacklisted titles.
-
-    Every queued game gets a `queue_url`. The URL is resolved against local
-    sdb.html first; only when SDB has no matching entry do we fall back to the
-    original URL supplied by the analyzer. `library_url` is kept synchronized
-    with that resolved public queue URL for the existing panel renderer.
-    """
+async def add_games(games: list[dict], requester_id: int | None = None, requester_name: str | None = None):
     async with _lock:
-        queue = _load(QUEUE_FILE)
-        history = _load(HISTORY_FILE)
-        blacklist = _load(BLACKLIST_FILE)
+        queue = _load(_path(QUEUE_FILE))
+        history = _load(_path(HISTORY_FILE))
+        blacklist = _load(_path(BLACKLIST_FILE))
         blacklisted = {_normalize(item.get("name", "")): item for item in blacklist}
         existing = {_normalize(item.get("name", "")) for item in queue}
-        added = []
-        blocked = []
+        added, blocked = [], []
         next_id = _next_id(queue, history)
         requested_at = datetime.now(timezone.utc).isoformat()
 
@@ -142,13 +123,11 @@ async def add_games(
             queue_url, queue_url_source = await _resolve_queue_url(game)
             item = {
                 "id": next_id,
-                "name": game.get("name"),
-                # Public queue URL: local sdb.html first, original URL fallback.
+                "name": name,
                 "queue_url": queue_url,
                 "queue_url_source": queue_url_source or "original",
                 "library_url": queue_url,
                 "library_source": queue_url_source or original_library_source or "original",
-                # Preserve the analyzer's original library URL/source separately.
                 "original_library_url": original_library_url,
                 "original_library_source": original_library_source,
                 "kepargamedb_url": game.get("kepargamedb_url"),
@@ -172,33 +151,28 @@ async def add_games(
             existing.add(key)
             next_id += 1
 
-        _save(QUEUE_FILE, queue)
+        _save(_path(QUEUE_FILE), queue)
         return added, blocked
 
 
 async def resolve_queue_item(identifier: str) -> dict | None:
     value = identifier.strip()
     async with _lock:
-        queue = _load(QUEUE_FILE)
+        queue = _load(_path(QUEUE_FILE))
         if value.isdigit():
             wanted_id = int(value)
             return next((item for item in queue if int(item.get("id", -1)) == wanted_id), None)
-
         wanted = _normalize(value)
         exact = next((item for item in queue if _normalize(item.get("name", "")) == wanted), None)
-        if exact:
-            return exact
-        return next((item for item in queue if wanted in _normalize(item.get("name", ""))), None)
+        return exact or next((item for item in queue if wanted in _normalize(item.get("name", ""))), None)
 
 
 async def remove_queue_item(identifier: str, reason: str = "") -> dict | None:
-    """Remove an item from the active queue without blacklisting it."""
     async with _lock:
-        queue = _load(QUEUE_FILE)
-        history = _load(HISTORY_FILE)
-        target_index = None
+        queue = _load(_path(QUEUE_FILE))
+        history = _load(_path(HISTORY_FILE))
         value = identifier.strip()
-
+        target_index = None
         if value.isdigit():
             wanted_id = int(value)
             for index, item in enumerate(queue):
@@ -208,36 +182,27 @@ async def remove_queue_item(identifier: str, reason: str = "") -> dict | None:
         else:
             wanted = _normalize(value)
             for index, item in enumerate(queue):
-                if _normalize(item.get("name", "")) == wanted:
+                if _normalize(item.get("name", "")) == wanted or wanted in _normalize(item.get("name", "")):
                     target_index = index
                     break
-            if target_index is None:
-                for index, item in enumerate(queue):
-                    if wanted in _normalize(item.get("name", "")):
-                        target_index = index
-                        break
-
         if target_index is None:
             return None
-
         item = queue.pop(target_index)
         item["action"] = "removed"
         item["reason"] = reason
         item["resolved_at"] = datetime.now(timezone.utc).isoformat()
         history.append(item)
-        _save(QUEUE_FILE, queue)
-        _save(HISTORY_FILE, history)
+        _save(_path(QUEUE_FILE), queue)
+        _save(_path(HISTORY_FILE), history)
         return item
 
 
 async def blacklist_game(identifier: str, reason: str) -> dict | None:
-    """Blacklist a game and remove any matching active queue entry."""
     async with _lock:
-        queue = _load(QUEUE_FILE)
-        blacklist = _load(BLACKLIST_FILE)
+        queue = _load(_path(QUEUE_FILE))
+        blacklist = _load(_path(BLACKLIST_FILE))
         value = identifier.strip()
         target_index = None
-
         if value.isdigit():
             wanted_id = int(value)
             for index, item in enumerate(queue):
@@ -250,12 +215,7 @@ async def blacklist_game(identifier: str, reason: str) -> dict | None:
                 if _normalize(item.get("name", "")) == wanted:
                     target_index = index
                     break
-
-        if target_index is not None:
-            item = queue.pop(target_index)
-        else:
-            item = {"name": identifier}
-
+        item = queue.pop(target_index) if target_index is not None else {"name": identifier}
         name = str(item.get("name", identifier)).strip()
         record = {
             "name": name,
@@ -263,9 +223,8 @@ async def blacklist_game(identifier: str, reason: str) -> dict | None:
             "blacklisted_at": datetime.now(timezone.utc).isoformat(),
             "blacklisted_by": item.get("blacklisted_by"),
         }
-
         blacklist = [x for x in blacklist if _normalize(x.get("name", "")) != _normalize(name)]
         blacklist.append(record)
-        _save(BLACKLIST_FILE, blacklist)
-        _save(QUEUE_FILE, queue)
+        _save(_path(BLACKLIST_FILE), blacklist)
+        _save(_path(QUEUE_FILE), queue)
         return record
