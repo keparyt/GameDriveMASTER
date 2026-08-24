@@ -1,17 +1,16 @@
 import discord
 from discord.ext import commands
 
+from config import DM_PARSE_PROMPT_TIMEOUT
 from utils.embed_style import INFO, SUCCESS, panel
 from utils.helper import log
-
-DM_PARSE_TIMEOUT = 24 * 60 * 60
 
 
 class DMParseView(discord.ui.View):
     """Ask separately for every DM whether that exact message should be game-parsed."""
 
     def __init__(self, cog: commands.Cog, source_message: discord.Message):
-        super().__init__(timeout=DM_PARSE_TIMEOUT)
+        super().__init__(timeout=DM_PARSE_PROMPT_TIMEOUT)
         self.cog = cog
         self.source_message = source_message
         self.owner_id = source_message.author.id
@@ -24,20 +23,19 @@ class DMParseView(discord.ui.View):
         await interaction.response.send_message("This prompt belongs to another user.", ephemeral=True)
         return False
 
-    async def _finish(self, interaction: discord.Interaction, title: str, description: str, color: int):
+    async def _finish(self, interaction, title: str, description: str, color: int):
         self.handled = True
         for child in self.children:
             child.disabled = True
         self.stop()
-        embed = panel(title, description, color=color, footer="DM message handling")
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(embed=panel(title, description, color=color, footer="DM message handling"), view=self)
 
     @discord.ui.button(label="Yes, parse this message", style=discord.ButtonStyle.success, emoji="🎮")
     async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(
             interaction,
             "🎮 Game parsing started",
-            "Parsing this exact DM for supported games and media. Your other DMs are handled independently and will each ask again.",
+            "Parsing this exact DM for supported games and media. Your next DM will ask again independently.",
             SUCCESS,
         )
         game_cog = self.cog.bot.get_cog("OnMessage")
@@ -54,7 +52,7 @@ class DMParseView(discord.ui.View):
         await self._finish(
             interaction,
             "Message not parsed",
-            "Okay — this DM will not be sent to the game parser. If another bot feature or command applies, it can still handle the message normally.",
+            "Okay — this DM will not be sent to the game parser. Other bot commands/features can still handle it normally.",
             INFO,
         )
 
@@ -65,13 +63,10 @@ class DMParseView(discord.ui.View):
             child.disabled = True
         if self.prompt_message is not None:
             try:
-                embed = panel(
-                    "Game parsing request expired",
-                    "No choice was made for this DM, so it was not parsed. Every new DM gets its own separate prompt.",
-                    color=INFO,
-                    footer="DM message handling",
+                await self.prompt_message.edit(
+                    embed=panel("Game parsing request expired", "No choice was made for this DM, so it was not parsed. Every new DM gets its own separate prompt.", color=INFO, footer="DM message handling"),
+                    view=self,
                 )
-                await self.prompt_message.edit(embed=embed, view=self)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
@@ -82,18 +77,12 @@ class DMGamePrompt(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or message.guild is not None:
-            return
-
-        # Ask for EVERY individual DM. Do not infer consent from a previous DM,
-        # even if the previous one contained a game URL or media.
-        if not isinstance(message.channel, discord.DMChannel):
+        if message.author.bot or message.guild is not None or not isinstance(message.channel, discord.DMChannel):
             return
 
         embed = panel(
             "🎮 Parse this message for games?",
-            "Do you want me to analyze **this exact DM** for game names/media?\n\n"
-            "Each DM is handled independently, so I will ask again for your next message.",
+            "Do you want me to analyze **this exact DM** for game names/media?\n\nEach DM is independent, so I will ask again for your next message.",
             color=INFO,
             footer="Choose Yes to parse this message • No leaves it unparsed",
         )
