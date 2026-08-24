@@ -37,8 +37,12 @@ class OnMessage(commands.Cog):
 
             status_message = await message.reply(
                 embed=discord.Embed(
-                    title="🎮 Analyzing Game...",
-                    description="Collecting metadata, audio, screenshots and other evidence...",
+                    title="🎮 Analyzing Games...",
+                    description=(
+                        "Collecting metadata, transcribing audio, extracting OCR from "
+                        "frames/screenshots, identifying every distinct game, and verifying "
+                        "matches against Steam..."
+                    ),
                 ),
                 mention_author=False,
             )
@@ -58,28 +62,78 @@ class OnMessage(commands.Cog):
                 await message.reply(embed=embed, mention_author=False)
 
     @staticmethod
-    def create_result_embed(result: dict) -> discord.Embed:
+    def _game_line(game: dict, index: int) -> str:
+        name = str(game.get("name", "Unknown game"))
+        confidence = float(game.get("confidence", 0))
+        steam_url = game.get("steam_url")
+        evidence_type = game.get("evidence_type")
+
+        # Discord embed markdown: [Game Name](https://...) makes the game name
+        # itself clickable when Steam verification produced a store URL.
+        linked_name = f"[{name}]({steam_url})" if steam_url else name
+        line = f"**{index}. {linked_name}** — {confidence:.0f}%"
+        if evidence_type:
+            line += f"\n↳ `{evidence_type}`"
+        return line
+
+    @classmethod
+    def create_result_embed(cls, result: dict) -> discord.Embed:
         status = result.get("status")
 
         if status == "identified":
-            name = result.get("game_name", "Unknown game")
-            confidence = float(result.get("confidence", 0))
-            embed = discord.Embed(
-                title="🎮 Game Identified",
-                description=f"**{name}**\n\nConfidence: **{confidence:.0f}%**",
-            )
-            if result.get("steam_url"):
-                embed.add_field(name="Steam", value=result["steam_url"], inline=False)
-            if result.get("reason"):
-                embed.add_field(name="Evidence", value=result["reason"][:1024], inline=False)
+            games = result.get("games") or result.get("candidates") or []
 
-            candidates = result.get("candidates", [])
-            if len(candidates) > 1:
-                text = "\n".join(
-                    f"• **{c.get('name', 'Unknown')}** — {float(c.get('confidence', 0)):.0f}%"
-                    for c in candidates[1:5]
+            # Backward compatibility if an older analyzer only returns one game.
+            if not games and result.get("game_name"):
+                games = [{
+                    "name": result.get("game_name"),
+                    "confidence": result.get("confidence", 0),
+                    "steam_url": result.get("steam_url"),
+                    "reason": result.get("reason"),
+                }]
+
+            embed = discord.Embed(
+                title="🎮 Games Identified",
+                description=f"Found **{len(games)}** distinct game(s).",
+            )
+
+            # Put every game in the result. Steam-confirmed titles become direct
+            # clickable hyperlinks instead of showing a raw URL.
+            lines = []
+            for index, game in enumerate(games, start=1):
+                line = cls._game_line(game, index)
+                if len("\n".join(lines + [line])) > 1000:
+                    embed.add_field(
+                        name="Games",
+                        value="\n".join(lines),
+                        inline=False,
+                    )
+                    lines = []
+                lines.append(line)
+
+            if lines:
+                embed.add_field(
+                    name="Games",
+                    value="\n".join(lines)[:1024],
+                    inline=False,
                 )
-                embed.add_field(name="Other candidates", value=text[:1024], inline=False)
+
+            # Add compact evidence per game so multiple games do not lose the
+            # OCR/transcript clues that caused them to be identified.
+            evidence_lines = []
+            for index, game in enumerate(games, start=1):
+                reason = str(game.get("reason") or "").strip()
+                if reason:
+                    evidence_lines.append(f"**{index}.** {reason}")
+
+            if evidence_lines:
+                value = "\n".join(evidence_lines)
+                if len(value) <= 1024:
+                    embed.add_field(name="Evidence", value=value, inline=False)
+                else:
+                    # Discord fields are limited to 1024 characters.
+                    embed.add_field(name="Evidence", value=value[:1021] + "...", inline=False)
+
             return embed
 
         return discord.Embed(
