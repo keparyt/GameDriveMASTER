@@ -63,14 +63,17 @@ async def process_game_message(message: discord.Message) -> dict | None:
     videos = [a for a in message.attachments if _is_video_attachment(a)]
     images = [a for a in message.attachments if _is_image_attachment(a)]
 
-    # Resolve Steam store links to their canonical store title before handing the
-    # text to the existing analyzer. This keeps the normal Steam verification path.
+    # Resolve Steam store links to the canonical game name. Do NOT rely on the
+    # HTML <title> because Steam can return promotional titles such as
+    # "Save 35% on Sandustry". The appdetails endpoint is authoritative.
     steam_titles = []
     for url in steam_urls[:10]:
         title = await _steam_title_from_url(url)
         if title:
             steam_titles.append(title)
             log(f"Game detector | Steam URL resolved | url={url} | title={title!r}")
+        else:
+            log(f"Game detector | Steam URL title unresolved | url={url}")
 
     # Direct media URLs are represented exactly like Discord attachments so the
     # existing OCR/transcription pipeline processes them.
@@ -88,9 +91,6 @@ async def process_game_message(message: discord.Message) -> dict | None:
     all_videos = [_attachment_data(a) for a in videos] + direct_video_data
     all_images = [_attachment_data(a) for a in images] + direct_image_data
 
-    # If a message contains an unsupported URL and no usable input besides it,
-    # don't let the AI hallucinate a game from the URL. The event handler can ask
-    # the user for the direct Steam/KeparDB game page and proper game name.
     non_url_text = URL_PATTERN.sub("", content).strip()
     if unsupported_urls and not supported_urls and not steam_titles and not all_videos and not all_images and not non_url_text:
         return {
@@ -134,6 +134,8 @@ async def process_game_message(message: discord.Message) -> dict | None:
         "attachment_count": videos_count + images_count,
         "sources": sources,
         "unsupported_urls": unsupported_urls,
+        "steam_urls": steam_urls,
+        "steam_titles": steam_titles,
     }
 
 
@@ -165,34 +167,88 @@ def _media_suffix(url: str) -> str:
 
 
 async def _steam_title_from_url(url: str) -> str | None:
-    """Extract the canonical Steam game title from a direct store page URL."""
+    """Extract the canonical Steam game title from a direct store page URL.
+
+    Steam's normal HTML title is not reliable because it can contain sale
+    banners, e.g. "Save 35% on Sandustry". Prefer the official Steam
+    appdetails API, then fall back to OpenGraph/HTML and finally the URL slug.
+    """
     parsed = urlparse(url)
-    if parsed.hostname not in {"store.steampowered.com", "steamcommunity.com"}:
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in {"store.steampowered.com", "steamcommunity.com"}:
         return None
-    match = re.search(r"/app/(\d+)", parsed.path)
+
+    match = re.search(r"/app/(\d+)", parsed.path, re.IGNORECASE)
     if not match:
         return None
+    appid = match.group(1)
+
+    headers = {"User-Agent": "KeparGameDetector/1.0"}
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "KeparGameDetector/1.0"}) as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # 1. Official Steam appdetails endpoint. This returns data.name,
+            # which is the actual app/game name and is not affected by sale text.
+            api_url = "https://store.steampowered.com/api/appdetails"
+            async with session.get(
+                api_url,
+                params={"appids": appid, "cc": "ca", "l": "english"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status == 200:
+                    payload = await response.json(content_type=None)
+                    app_data = payload.get(str(appid), {}) if isinstance(payload, dict) else {}
+                    data = app_data.get("data", {}) if isinstance(app_data, dict) else {}
+                    api_title = str(data.get("name") or "").strip()
+                    if api_title:
+                        return api_title
+                    log(f"Game detector Steam API | no canonical name | appid={appid}")
+                else:
+                    log(f"Game detector Steam API | HTTP {response.status} | appid={appid}")
+
+            # 2. HTML fallback. OpenGraph is generally cleaner than <title>.
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as response:
                 if response.status != 200:
-                    return None
+                    return _steam_title_from_slug(parsed.path)
                 html = await response.text(errors="ignore")
+
         soup = BeautifulSoup(html, "html.parser")
         node = soup.select_one("meta[property='og:title']")
         if node and node.get("content"):
             title = str(node["content"]).strip()
-            title = re.sub(r"\s+on Steam\s*$", "", title, flags=re.I).strip()
+            title = _clean_steam_title(title)
             if title:
                 return title
+
         title_node = soup.select_one("title")
         if title_node:
-            title = title_node.get_text(" ", strip=True)
-            title = re.sub(r"\s+on Steam\s*$", "", title, flags=re.I).strip()
-            return title or None
+            title = _clean_steam_title(title_node.get_text(" ", strip=True))
+            if title:
+                return title
+
     except Exception as exc:
         log(f"Game detector Steam URL error | {url} | {type(exc).__name__}: {exc}")
-    return None
+
+    # 3. Last-resort recovery from the canonical Steam URL slug. This is useful
+    # when Steam HTML/API is temporarily unavailable.
+    return _steam_title_from_slug(parsed.path)
+
+
+def _clean_steam_title(value: str) -> str | None:
+    """Remove Steam's promotional wrappers from HTML titles."""
+    title = re.sub(r"\s+on Steam\s*$", "", str(value or ""), flags=re.I).strip()
+    title = re.sub(r"^Save\s+\d+%\s+on\s+", "", title, flags=re.I).strip()
+    title = re.sub(r"^\d+%\s+off\s+", "", title, flags=re.I).strip()
+    title = re.sub(r"^Free\s+to\s+Play\s+", "", title, flags=re.I).strip()
+    return title or None
+
+
+def _steam_title_from_slug(path: str) -> str | None:
+    match = re.search(r"/app/\d+/([^/?#]+)", path, re.IGNORECASE)
+    if not match:
+        return None
+    slug = match.group(1).replace("_", " ").replace("-", " ")
+    slug = re.sub(r"\s+", " ", slug).strip()
+    return slug.title() if slug else None
 
 
 def _is_video_attachment(attachment: discord.Attachment) -> bool:
