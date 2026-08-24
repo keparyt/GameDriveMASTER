@@ -4,7 +4,9 @@ import re
 import discord
 from discord.ext import commands
 
-from processors.game_analyzer import analyze_game_input
+# Evidence-first analyzer: actual media/OCR is authoritative; social descriptions
+# are deliberately treated as last-resort context.
+from processors.game_media_analyzer import analyze_game_input
 from processors.game_queue import add_games, list_queue
 from processors.game_queue_panel import get_panel_message_id, set_panel_message_id
 from processors.input_parser import process_game_message
@@ -210,7 +212,7 @@ class OnMessage(commands.Cog):
                 await message.channel.send(content=requester_mention, embed=embed)
                 return
 
-            status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Collecting metadata, transcribing audio, extracting OCR and identifying every distinct game.")
+            status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Inspecting every media item, sampling the full video duration for OCR, transcribing audio, cross-checking sources, and using descriptions only as a last resort.")
             status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
             status_message = await message.channel.send(embed=status_embed)
 
@@ -219,7 +221,6 @@ class OnMessage(commands.Cog):
             games = result.get("games") or []
             view = GameSelectionView(self, games, installed) if games else None
             result_embed = self.create_result_embed(result, installed, captured_input)
-            # Mention the requester exactly once, when the scan has completed.
             await status_message.edit(content=requester_mention, embed=result_embed, view=view)
         except Exception as error:
             log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
@@ -259,7 +260,8 @@ class OnMessage(commands.Cog):
             selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
             platform = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
-            lines.append(f"**{index}. {shown}** — {state} · {platform}")
+            evidence_type = str(game.get("evidence_type") or "unknown")
+            lines.append(f"**{index}. {shown}** — {state} · `{evidence_type}` · {platform}")
         for start in range(0, len(lines), 15):
             embed.add_field(name="Detected games" if start == 0 else "More games", value="\n".join(lines[start:start + 15])[:1024], inline=False)
 
