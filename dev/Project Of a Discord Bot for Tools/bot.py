@@ -22,11 +22,12 @@ from server.connections import ConnectionManager
 from server.web import LANWebServer
 from utils.helper import log
 
-# Install the enhanced OCR title-card extractor before events.on_message is loaded.
-# The existing media analyzer keeps all of its download/OCR/verification behavior;
-# only its evidence-to-title callback is replaced with the stricter implementation.
+# Install the enhanced evidence extractor before events.on_message is loaded.
+# It keeps the existing downloader/OCR/verification pipeline while preventing
+# OCR frame labels from becoming fake game titles and preserving all sampled
+# video frames for the LLM instead of truncating the reel too early.
 from processors import game_media_analyzer as _game_media_analyzer
-from processors.game_media_analyzer_fixed import _identify_from_evidence as _identify_game_titles
+from processors.game_detector_patch import _identify_from_evidence as _identify_game_titles
 
 _game_media_analyzer._identify_from_evidence = _identify_game_titles
 
