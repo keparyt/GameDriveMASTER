@@ -10,10 +10,22 @@ from urllib.parse import urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
+from config import (
+    HTTP_USER_AGENT,
+    INSTAGRAM_HOSTS,
+    INSTAGRAM_MAX_MEDIA_ITEMS,
+    INSTAGRAM_MEDIA_TIMEOUT_SECONDS,
+    INSTAGRAM_REFERER,
+    INSTAGRAM_REQUEST_TIMEOUT_SECONDS,
+    INSTAGRAM_USE_HTML_FALLBACK,
+    INSTAGRAM_USE_INSTALOADER,
+)
+
 try:
     import instaloader
 except ImportError:
     instaloader = None
+
 
 @dataclass
 class InstagramMedia:
@@ -22,6 +34,7 @@ class InstagramMedia:
     thumbnail_url: str | None = None
     index: int = 0
 
+
 @dataclass
 class InstagramPost:
     url: str
@@ -29,13 +42,12 @@ class InstagramPost:
     media: list[InstagramMedia] | None = None
     author: str | None = None
 
-INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com", "m.instagram.com"}
-
 
 def is_instagram_url(url: str) -> bool:
     try:
-        host = (urlparse(url).hostname or "").lower()
-        return host in INSTAGRAM_HOSTS and bool(re.match(r"^/(p|reel|reels|tv)/[^/]+", urlparse(url).path))
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return host in INSTAGRAM_HOSTS and bool(re.match(r"^/(p|reel|reels|tv)/[^/]+", parsed.path))
     except Exception:
         return False
 
@@ -89,8 +101,12 @@ def _post_shortcode(url: str) -> str:
 
 
 def _instaloader_media(url: str) -> tuple[list[InstagramMedia], str]:
-    """Use Instaloader's post/sidecar model. Never use its filename timestamp logic."""
-    if instaloader is None:
+    """Use Instaloader sidecar traversal without touching timestamp fields.
+
+    Instaloader's normal download path can call filename timestamp helpers with
+    incomplete metadata. We only use Post metadata and direct CDN URLs here.
+    """
+    if not INSTAGRAM_USE_INSTALOADER or instaloader is None:
         return [], ""
     loader = instaloader.Instaloader(download_pictures=False, download_videos=False, save_metadata=False, quiet=True)
     post = instaloader.Post.from_shortcode(loader.context, _post_shortcode(url))
@@ -98,8 +114,8 @@ def _instaloader_media(url: str) -> tuple[list[InstagramMedia], str]:
     media: list[InstagramMedia] = []
     seen: set[str] = set()
 
-    def add(image_url: str | None, media_type: str = "image") -> None:
-        cleaned = _clean_url(image_url)
+    def add(media_url: str | None, media_type: str = "image") -> None:
+        cleaned = _clean_url(media_url)
         if cleaned and cleaned not in seen:
             seen.add(cleaned)
             media.append(InstagramMedia(cleaned, media_type=media_type, index=len(media) + 1))
@@ -109,51 +125,51 @@ def _instaloader_media(url: str) -> tuple[list[InstagramMedia], str]:
             add(child.video_url if child.is_video else child.display_url, "video" if child.is_video else "image")
     else:
         add(post.video_url if post.is_video else post.url, "video" if post.is_video else "image")
-
     return media, caption
 
 
 async def _fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"}
-    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as response:
+    headers = {
+        "User-Agent": HTTP_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=INSTAGRAM_REQUEST_TIMEOUT_SECONDS), allow_redirects=True) as response:
         response.raise_for_status()
         return await response.text(errors="replace")
 
 
 async def _download_media(session: aiohttp.ClientSession, item: InstagramMedia, target: Path) -> Path:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36", "Referer": "https://www.instagram.com/"}
-    async with session.get(item.url, headers=headers, timeout=aiohttp.ClientTimeout(total=120), allow_redirects=True) as response:
+    headers = {"User-Agent": HTTP_USER_AGENT, "Referer": INSTAGRAM_REFERER}
+    async with session.get(item.url, headers=headers, timeout=aiohttp.ClientTimeout(total=INSTAGRAM_MEDIA_TIMEOUT_SECONDS), allow_redirects=True) as response:
         response.raise_for_status()
         data = await response.read()
         content_type = (response.headers.get("Content-Type") or "").lower()
-        # Instagram occasionally returns a challenge/error page with HTTP 200.
         if not data or "text/html" in content_type or "application/json" in content_type or data.lstrip().startswith((b"<!DOCTYPE", b"<html", b"{")):
             raise RuntimeError(f"Instagram CDN returned non-media response ({content_type or 'unknown content-type'})")
         if item.media_type == "image" and not (data.startswith(b"\xff\xd8\xff") or data.startswith(b"\x89PNG") or data.startswith(b"RIFF")):
             raise RuntimeError("Instagram CDN response is not a recognized image")
-        if item.media_type == "video" and not (b"ftyp" in data[:64]):
+        if item.media_type == "video" and b"ftyp" not in data[:64]:
             raise RuntimeError("Instagram CDN response is not a recognized MP4")
         target.write_bytes(data)
     return target
 
 
 async def scrape_post(url: str, workdir: Path | None = None):
-    """Scrape Instagram. Instaloader is primary; HTML JSON is fallback."""
+    """Extract every item in an Instagram post/sidecar, then download it."""
     media: list[InstagramMedia] = []
     caption = ""
     seen: set[str] = set()
 
-    try:
-        media, caption = _instaloader_media(url)
-    except Exception as exc:
-        # Instaloader can fail on public posts because Instagram changes its
-        # private endpoints. Keep the browser-like HTML fallback available.
-        media = []
-        caption = ""
+    if INSTAGRAM_USE_INSTALOADER:
+        try:
+            media, caption = _instaloader_media(url)
+        except Exception:
+            media, caption = [], ""
 
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
-        if not media:
+        if not media and INSTAGRAM_USE_HTML_FALLBACK:
             html = await _fetch_html(session, url)
             soup = BeautifulSoup(html, "html.parser")
             for script in soup.find_all("script"):
@@ -180,8 +196,9 @@ async def scrape_post(url: str, workdir: Path | None = None):
         if not media:
             raise RuntimeError("Instagram scraper found no public media. The post may require authentication or Instagram may have blocked the request.")
 
-        for i, item in enumerate(media, 1):
+        for i, item in enumerate(media[:INSTAGRAM_MAX_MEDIA_ITEMS], 1):
             item.index = i
+        media = media[:INSTAGRAM_MAX_MEDIA_ITEMS]
 
         if workdir is None:
             return InstagramPost(url=url, caption=caption, media=media)
@@ -189,7 +206,7 @@ async def scrape_post(url: str, workdir: Path | None = None):
         workdir.mkdir(parents=True, exist_ok=True)
         downloaded: list[Path] = []
         errors: list[str] = []
-        for item in media[:20]:
+        for item in media:
             suffix = ".mp4" if item.media_type == "video" else ".jpg"
             target = workdir / f"instagram_{item.index:03d}{suffix}"
             try:
@@ -201,7 +218,14 @@ async def scrape_post(url: str, workdir: Path | None = None):
         if not downloaded:
             raise RuntimeError("Instagram media was discovered but none could be downloaded: " + "; ".join(errors[-5:]))
 
-        metadata = {"title": f"Instagram post {_post_shortcode(url)}", "description": caption, "uploader": None, "instagram_url": url, "media_count": len(downloaded), "entries": [{"url": x.url, "media_type": x.media_type, "index": x.index} for x in media]}
+        metadata = {
+            "title": f"Instagram post {_post_shortcode(url)}",
+            "description": caption,
+            "uploader": None,
+            "instagram_url": url,
+            "media_count": len(downloaded),
+            "entries": [{"url": item.url, "media_type": item.media_type, "index": item.index} for item in media],
+        }
         return metadata, downloaded
 
 
