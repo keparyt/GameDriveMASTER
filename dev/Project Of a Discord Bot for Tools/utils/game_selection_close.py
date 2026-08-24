@@ -4,8 +4,8 @@ import discord
 def install_game_selection_close_button():
     """Add a small Close button to every GameSelectionView instance.
 
-    Kept as a patch module so the existing selection logic stays untouched.
-    The button only removes the UI controls; the result embed remains visible.
+    The button deletes the private result panel completely. This lets users
+    dismiss a Games Identified panel before its normal 24-hour expiry.
     """
     from events.on_message import GameSelectionView
 
@@ -15,16 +15,23 @@ def install_game_selection_close_button():
     original_init = GameSelectionView.__init__
 
     async def close_ui(interaction: discord.Interaction):
-        # The selection panel is delivered privately (DM or ephemeral).
-        # Remove only its controls so the analysis result remains available.
-        if interaction.response.is_done():
+        # A user explicitly closing the panel should remove both the embed and
+        # its controls, rather than merely disabling/removing the controls.
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+
+            await interaction.message.delete()
+        except discord.NotFound:
+            # Already expired or deleted; nothing else is required.
+            return
+        except (discord.Forbidden, discord.HTTPException):
+            # Fallback for interaction message types Discord does not allow us
+            # to delete directly: remove the UI so the panel cannot be used.
             try:
                 await interaction.message.edit(view=None)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
-            return
-
-        await interaction.response.edit_message(view=None)
 
     def patched_init(self, cog, games, installed_names):
         original_init(self, cog, games, installed_names)
