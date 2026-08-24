@@ -53,32 +53,38 @@ async def _resolve_queue_url(game: dict) -> tuple[str | None, str | None]:
             pass
 
     original_url = (
-        game.get("library_url")
+        game.get("original_library_url")
+        or game.get("library_url")
         or game.get("kepargamedb_url")
         or game.get("steam_url")
         or game.get("tgdb_url")
     )
-    original_source = game.get("library_source")
+    original_source = game.get("original_library_source") or game.get("library_source")
     return original_url, original_source
 
 
 async def list_queue() -> list[dict]:
-    """Return the queue with legacy entries upgraded to their SDB URL when available."""
+    """Return queue entries using SDB first, with the stored URL as fallback.
+
+    This also upgrades old queue records whenever the local sdb.html contains a
+    better/canonical URL for the game.
+    """
     async with _lock:
         queue = _load(QUEUE_FILE)
         changed = False
         for item in queue:
-            # New entries already have a resolved queue_url. Legacy entries do not.
-            if not item.get("queue_url"):
-                queue_url, queue_source = await _resolve_queue_url(item)
-                if queue_url:
-                    item["queue_url"] = queue_url
-                    item["queue_url_source"] = queue_source or "original"
-                    # The existing queue-panel renderer uses library_url.
-                    # Keep it synchronized with the resolved public queue URL.
-                    item["library_url"] = queue_url
-                    item["library_source"] = queue_source or item.get("library_source") or "original"
-                    changed = True
+            queue_url, queue_source = await _resolve_queue_url(item)
+            if queue_url and item.get("queue_url") != queue_url:
+                item["queue_url"] = queue_url
+                item["queue_url_source"] = queue_source or "original"
+                item["library_url"] = queue_url
+                item["library_source"] = queue_source or item.get("library_source") or "original"
+                changed = True
+            elif queue_url and item.get("library_url") != queue_url:
+                # Keep the existing queue-panel renderer pointed at the resolved URL.
+                item["library_url"] = queue_url
+                item["library_source"] = queue_source or item.get("library_source") or "original"
+                changed = True
         if changed:
             _save(QUEUE_FILE, queue)
         return queue
@@ -102,10 +108,10 @@ async def add_games(
 ) -> tuple[list[dict], list[dict]]:
     """Add games while refusing blacklisted titles.
 
-    Every queued game gets a `queue_url`. The URL is resolved against the local
+    Every queued game gets a `queue_url`. The URL is resolved against local
     sdb.html first; only when SDB has no matching entry do we fall back to the
-    original URL supplied by the analyzer. `library_url` is set to that resolved
-    value because the existing public queue-panel renderer displays it.
+    original URL supplied by the analyzer. `library_url` is kept synchronized
+    with that resolved public queue URL for the existing panel renderer.
     """
     async with _lock:
         queue = _load(QUEUE_FILE)
