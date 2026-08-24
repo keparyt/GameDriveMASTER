@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from processors.game_queue import complete_queue_item, resolve_queue_item
+from processors.game_queue import blacklist_game, remove_queue_item
 
 
 class Games(commands.GroupCog, group_name="games"):
@@ -24,6 +24,7 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
+        from processors.game_queue import complete_queue_item
         item = await complete_queue_item(identifier, "downloaded", "Downloaded")
         if item is None:
             await interaction.response.send_message(f"❌ No queued game matched `{identifier}`.", ephemeral=True)
@@ -36,31 +37,55 @@ class Games(commands.GroupCog, group_name="games"):
         )
 
     @app_commands.command(
-        name="deny",
-        description="Deny a queued game and remove it from the queue.",
+        name="remove",
+        description="Remove a game from the queue without blacklisting it.",
     )
     @app_commands.describe(
         identifier="Queue ID or game name",
-        reason="Why the game cannot or should not be downloaded",
+        reason="Optional reason for removing it",
     )
-    async def deny(self, interaction: discord.Interaction, identifier: str, reason: str):
+    async def remove(self, interaction: discord.Interaction, identifier: str, reason: str | None = None):
         if not await self._authorized(interaction):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
-        item = await complete_queue_item(identifier, "denied", reason)
+        item = await remove_queue_item(identifier, reason or "")
         if item is None:
             await interaction.response.send_message(f"❌ No queued game matched `{identifier}`.", ephemeral=True)
             return
 
         await self._refresh_panel()
+        suffix = f"\nReason: {reason}" if reason else ""
         await interaction.response.send_message(
-            f"🚫 Denied **{item['name']}**.\nReason: {reason}",
+            f"🗑️ Removed **{item['name']}** from the queue.{suffix}",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="blacklist",
+        description="Blacklist a game so users cannot request it.",
+    )
+    @app_commands.describe(
+        identifier="Queue ID or game name",
+        reason="Why this game is blacklisted",
+    )
+    async def blacklist(self, interaction: discord.Interaction, identifier: str, reason: str):
+        if not await self._authorized(interaction):
+            await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
+            return
+
+        record = await blacklist_game(identifier, reason)
+        if record is None:
+            await interaction.response.send_message(f"❌ Could not blacklist `{identifier}`.", ephemeral=True)
+            return
+
+        await self._refresh_panel()
+        await interaction.response.send_message(
+            f"🚫 **{record['name']}** is now blacklisted.\nReason: {reason}",
             ephemeral=True,
         )
 
     async def _refresh_panel(self):
-        # The queue panel is owned by the existing on_message cog.
         cog = self.bot.get_cog("OnMessage")
         if cog is not None:
             await cog.refresh_queue_panel()
