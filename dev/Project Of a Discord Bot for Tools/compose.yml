@@ -1,0 +1,29 @@
+services:
+  kepar-lab-assist:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kepar-lab-assist
+    restart: unless-stopped
+
+    # The bot's LAN web service listens on port 9999.
+    ports:
+      - "9999:9999"
+
+    # Keep queue/history/panel state across container recreates.
+    volumes:
+      - ./data:/app/data
+      - ./config.py:/app/config.py:ro
+
+    # Lets the container reach Ollama running on the Windows host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      TZ: America/Toronto
+      PYTHONUNBUFFERED: "1"
+
+    # Give media/OCR processing enough time and memory.
+    stop_grace_period: 30s
+
+    init: true
