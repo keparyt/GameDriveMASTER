@@ -74,6 +74,10 @@ async def list_queue() -> list[dict]:
                 if queue_url:
                     item["queue_url"] = queue_url
                     item["queue_url_source"] = queue_source or "original"
+                    # The existing queue-panel renderer uses library_url.
+                    # Keep it synchronized with the resolved public queue URL.
+                    item["library_url"] = queue_url
+                    item["library_source"] = queue_source or item.get("library_source") or "original"
                     changed = True
         if changed:
             _save(QUEUE_FILE, queue)
@@ -100,7 +104,8 @@ async def add_games(
 
     Every queued game gets a `queue_url`. The URL is resolved against the local
     sdb.html first; only when SDB has no matching entry do we fall back to the
-    original URL supplied by the analyzer.
+    original URL supplied by the analyzer. `library_url` is set to that resolved
+    value because the existing public queue-panel renderer displays it.
     """
     async with _lock:
         queue = _load(QUEUE_FILE)
@@ -126,17 +131,20 @@ async def add_games(
             if key in existing:
                 continue
 
+            original_library_url = game.get("library_url")
+            original_library_source = game.get("library_source")
             queue_url, queue_url_source = await _resolve_queue_url(game)
             item = {
                 "id": next_id,
                 "name": game.get("name"),
-                # Canonical URL used by the public Massive Library queue panel.
-                # This is always resolved from local sdb.html first.
+                # Public queue URL: local sdb.html first, original URL fallback.
                 "queue_url": queue_url,
                 "queue_url_source": queue_url_source or "original",
-                # Keep every source URL separately for provenance/fallbacks.
-                "library_url": game.get("library_url"),
-                "library_source": game.get("library_source"),
+                "library_url": queue_url,
+                "library_source": queue_url_source or original_library_source or "original",
+                # Preserve the analyzer's original library URL/source separately.
+                "original_library_url": original_library_url,
+                "original_library_source": original_library_source,
                 "kepargamedb_url": game.get("kepargamedb_url"),
                 "steam_url": game.get("steam_url"),
                 "steam_appid": game.get("steam_appid"),
