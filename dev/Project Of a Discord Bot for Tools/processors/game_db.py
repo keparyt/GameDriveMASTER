@@ -24,18 +24,35 @@ _cache_signature: tuple[int, int] | None = None
 _lock = asyncio.Lock()
 
 
-# Common shorthand/transcription forms that are unambiguous enough to normalize
-# before the KeparDB fuzzy matcher. These are intentionally small and explicit;
-# arbitrary AI-generated substitutions are never accepted here.
+# Explicit, conservative aliases for common spoken/transcribed forms.
+# These are canonicalization hints only; the resulting title still has to be
+# present in Steam or the local KeparDB before it can be queued.
 _TITLE_ALIASES = {
     "arc 2": "ark 2",
     "ark ii": "ark 2",
+    "civilization 6": "sid meier s civilization vi",
+    "civilisation 6": "sid meier s civilization vi",
+    "civilization vi": "sid meier s civilization vi",
+    "civilisation vi": "sid meier s civilization vi",
+    "civ 6": "sid meier s civilization vi",
+    "civ vi": "sid meier s civilization vi",
     "civilization 7": "sid meier s civilization vii",
+    "civilisation 7": "sid meier s civilization vii",
     "civilization vii": "sid meier s civilization vii",
+    "civilisation vii": "sid meier s civilization vii",
+    "civ 7": "sid meier s civilization vii",
+    "civ vii": "sid meier s civilization vii",
     "stalker 2": "s t a l k e r 2 heart of chornobyl",
     "stalker 2 heart of chornobyl": "s t a l k e r 2 heart of chornobyl",
     "hollow knight silk song": "hollow knight silksong",
+    "hollow knight silk songs": "hollow knight silksong",
     "hollow knight silksong": "hollow knight silksong",
+    "rocket league": "rocket league",
+    "overwatch 2": "overwatch 2",
+    "garys mod": "garrys mod",
+    "gary s mod": "garrys mod",
+    "gmod": "garrys mod",
+    "skyrim": "the elder scrolls v skyrim",
 }
 
 
