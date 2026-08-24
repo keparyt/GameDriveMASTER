@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from config import KEPAR_DB_URL_PREFIX
+from processors.thegamesdb import verify_game
 from utils.helper import log
 
 DB_FILE = Path(__file__).resolve().parent.parent / "sdb.html"
@@ -17,6 +18,11 @@ DB_FILE = Path(__file__).resolve().parent.parent / "sdb.html"
 class GameDBEntry:
     name: str
     url: str
+    source: str = "kepardb"
+    tgdb_game_id: int | None = None
+    selected_platform: str | None = None
+    console_platforms: tuple[str, ...] = ()
+    pc_available: bool = False
 
 
 _cache: list[GameDBEntry] = []
@@ -25,8 +31,6 @@ _lock = asyncio.Lock()
 
 
 # Explicit, conservative aliases for common spoken/transcribed forms.
-# These are canonicalization hints only; the resulting title still has to be
-# present in Steam or the local KeparDB before it can be queued.
 _TITLE_ALIASES = {
     "arc 2": "ark 2",
     "ark ii": "ark 2",
@@ -114,6 +118,12 @@ async def refresh_game_database(force: bool = False) -> list[GameDBEntry]:
 
 
 async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | None:
+    """Find a local KeparGameDB entry, then fall back to TheGamesDB.
+
+    The external fallback is deliberately strict: a title is accepted only when
+    TheGamesDB has a console release. When a PC release also exists, its PC
+    platform is selected as the canonical download target.
+    """
     entries = await refresh_game_database()
     query = _match_key(game_name)
     if not query:
@@ -121,11 +131,11 @@ async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | No
 
     exact = [entry for entry in entries if _match_key(entry.name) == query]
     if exact:
-        return exact[0]
+        return await _with_platform_metadata(exact[0], game_name)
 
     contained = [entry for entry in entries if query in _match_key(entry.name) or _match_key(entry.name) in query]
     if contained:
-        return min(contained, key=lambda entry: len(_match_key(entry.name)))
+        return await _with_platform_metadata(min(contained, key=lambda entry: len(_match_key(entry.name))), game_name)
 
     best: tuple[float, GameDBEntry | None] = (0.0, None)
     for entry in entries:
@@ -133,7 +143,41 @@ async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | No
         ratio = difflib.SequenceMatcher(None, query, candidate).ratio()
         if ratio > best[0]:
             best = (ratio, entry)
-    return best[1] if best[0] >= min_fuzzy else None
+    if best[1] is not None and best[0] >= min_fuzzy:
+        return await _with_platform_metadata(best[1], game_name)
+
+    # Local DB miss: use TGDB as the cross-platform authority. This is what lets
+    # non-Steam PC games such as Epic/Battle.net titles remain detectable.
+    tgdb = await verify_game(game_name)
+    if tgdb is None:
+        return None
+    return GameDBEntry(
+        name=tgdb.name,
+        url=tgdb.url,
+        source="thegamesdb",
+        tgdb_game_id=tgdb.game_id,
+        selected_platform=tgdb.selected_platform_name,
+        console_platforms=tuple(tgdb.console_names),
+        pc_available=bool(tgdb.pc_platform),
+    )
+
+
+async def _with_platform_metadata(entry: GameDBEntry, original_name: str) -> GameDBEntry | None:
+    """Require console support for local DB matches too, while preserving the local URL."""
+    tgdb = await verify_game(entry.name or original_name)
+    if tgdb is None:
+        # Do not silently drop an existing local entry when TGDB is unavailable or
+        # no API key is configured. Existing KeparDB/Steam behavior remains usable.
+        return entry
+    return GameDBEntry(
+        name=entry.name,
+        url=entry.url,
+        source=entry.source,
+        tgdb_game_id=tgdb.game_id,
+        selected_platform=tgdb.selected_platform_name,
+        console_platforms=tuple(tgdb.console_names),
+        pc_available=bool(tgdb.pc_platform),
+    )
 
 
 async def enrich_games(games: list[dict]) -> list[dict]:
@@ -145,12 +189,18 @@ async def enrich_games(games: list[dict]) -> list[dict]:
         if match:
             item["detected_name"] = original_name
             item["name"] = match.name
-            item["kepargamedb_name"] = match.name
-            item["kepargamedb_url"] = match.url
+            item["kepargamedb_name"] = match.name if match.source == "kepardb" else None
+            item["kepargamedb_url"] = match.url if match.source == "kepardb" else None
             item["library_url"] = match.url
-            item["library_source"] = "kepargamedb"
+            item["library_source"] = match.source
             item["verified"] = True
-            item["verification_source"] = "kepardb"
+            item["verification_source"] = match.source
+            item["tgdb_game_id"] = match.tgdb_game_id
+            item["selected_platform"] = match.selected_platform
+            item["console_platforms"] = list(match.console_platforms)
+            item["console_names"] = list(match.console_platforms)
+            item["pc_available"] = match.pc_available
+            item["has_console"] = bool(match.console_platforms)
         else:
             item["verified"] = False
             item["verification_source"] = None
