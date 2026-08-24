@@ -175,14 +175,31 @@ EVIDENCE:\n{evidence[:MAX_EVIDENCE_CHARS]}'''
     return {}
 
 
-async def _identify_from_evidence(evidence: str) -> dict:
+async def _identify_from_evidence(evidence: str, pass_name="primary") -> dict:
+    """Compatibility wrapper: the base analyzer now performs two named passes.
+
+    Keep the wrapper signature compatible with the base function so recovery pass
+    calls do not crash with a positional-argument TypeError.
+    """
     hints = _title_hints_from_evidence(evidence)
     if hints:
-        log("Game detector title-card hints | " + ", ".join(x["name"] for x in hints))
+        log(f"Game detector title-card hints | pass={pass_name} | " + ", ".join(x["name"] for x in hints))
     try:
-        ai = await _ORIGINAL_IDENTIFY_FROM_EVIDENCE(evidence)
-    except Exception:
+        # Forward the pass name. This is important because the base analyzer uses
+        # different prompts for primary vs recovery extraction.
+        ai = await _ORIGINAL_IDENTIFY_FROM_EVIDENCE(evidence, pass_name)
+    except TypeError:
+        # Backwards compatibility in case another installed/base version still has
+        # the old one-argument signature.
+        try:
+            ai = await _ORIGINAL_IDENTIFY_FROM_EVIDENCE(evidence)
+        except Exception as exc:
+            log(f"Game detector base evidence extraction failed | pass={pass_name} | {type(exc).__name__}: {exc}")
+            ai = {}
+    except Exception as exc:
+        log(f"Game detector base evidence extraction failed | pass={pass_name} | {type(exc).__name__}: {exc}")
         ai = {}
+
     if not isinstance(ai, dict) or not ai.get("candidates"):
         ai = await _local_ollama_extract(evidence)
 
