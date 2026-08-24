@@ -29,12 +29,21 @@ _GENERIC_WORDS = {
     "competitive", "craft", "fighting", "fps", "game", "games", "genre", "horror", "indie",
     "multiplayer", "open", "online", "platformer", "puzzle", "rpg", "roguelike", "romantic",
     "sandbox", "screen", "shooter", "simulation", "single", "split", "strategy", "survival",
-    "tactical", "third", "world", "player", "players", "3d", "2d", "free", "to", "play",
+    "tactical", "third", "world", "players", "player", "3d", "2d", "free", "to", "play",
     "new", "best", "coming", "soon", "early", "access", "demo", "steam", "recurring", "ocr",
     "words", "gamer", "highly", "fun", "these", "all", "are", "you", "your", "with", "into",
     "for", "the", "and", "or", "if", "this", "that", "when", "while", "very", "want", "can",
     "will", "have", "has", "from",
 }
+_SECTION_HEADERS = {
+    "primary evidence actual media",
+    "secondary evidence source metadata",
+    "last resort evidence descriptions captions",
+}
+_LABEL_PREFIXES = (
+    "source title:", "source uploader/account:", "source description/caption:",
+    "media item title:", "media item description:", "discord message text/context:",
+)
 _DESCRIPTOR_START = re.compile(r"\b(?:co[ -]?op|coop|multiplayer|single[ -]?player|split[ -]?screen|romantic|action|adventure|puzzle|open[ -]?world|3d|2d|platformer|survival|strategy|shooter|rpg|horror|sandbox|simulation)\b", re.I)
 _PLAYER_CARD = re.compile(r"^\s*(?:[-*•\d.)]+\s*)?(?P<title>[^\n:|]{2,100}?)\s*\(\s*\d+\s*players?\s*\)\b", re.I)
 _TITLE_DESCRIPTOR = re.compile(r"^\s*(?:[-*•\d.)]+\s*)?(?P<title>[^\n:|]{2,70}?)\s*[:|]\s*(?P<descriptor>.+)$", re.I)
@@ -47,6 +56,15 @@ def _normalize(value):
 def _normalize_ocr_line(value: str) -> str:
     value = re.sub(r"\s+", " ", str(value or "")).strip()
     return re.sub(r"^[\s\-–—•*]+", "", value).strip()
+
+
+def _is_section_or_label(value: str) -> bool:
+    normalized = _normalize(value)
+    if normalized in _SECTION_HEADERS:
+        return True
+    if str(value).strip().startswith("==="):
+        return True
+    return any(str(value).strip().casefold().startswith(prefix) for prefix in _LABEL_PREFIXES)
 
 
 def _clean_title(value: str) -> str:
@@ -78,7 +96,7 @@ def _title_hints_from_evidence(evidence: str) -> list[dict]:
     hints, seen = [], set()
     for raw_line in str(evidence or "").splitlines():
         line = _normalize_ocr_line(raw_line)
-        if not line or line.lower().startswith(("frame_", "video #", "image #")):
+        if not line or _is_section_or_label(line) or line.lower().startswith(("frame_", "video #", "image #")):
             continue
         candidates = []
         match = _PLAYER_CARD.match(line)
@@ -96,7 +114,7 @@ def _title_hints_from_evidence(evidence: str) -> list[dict]:
             if 2 <= len(re.findall(r"[a-z0-9']+", line.casefold())) <= 6 and upper_ratio >= 0.80 and not _is_generic_title(line) and not _looks_like_sentence(line):
                 candidates.append(_clean_title(line))
         for title in candidates:
-            if len(title) < 2 or len(title) > 80 or _is_generic_title(title):
+            if len(title) < 2 or len(title) > 80 or _is_generic_title(title) or _is_section_or_label(title):
                 continue
             key = _normalize(title).replace(" ", "")
             if key and key not in seen:
@@ -106,6 +124,8 @@ def _title_hints_from_evidence(evidence: str) -> list[dict]:
 
 
 def _candidate_supported_by_evidence(name: str, evidence: str) -> bool:
+    if _is_section_or_label(name):
+        return False
     query = _normalize(name)
     normalized = _normalize(evidence)
     if not query:
@@ -113,7 +133,10 @@ def _candidate_supported_by_evidence(name: str, evidence: str) -> bool:
     if query in normalized:
         return True
     q_words = query.split()
-    for line in (_normalize(x) for x in evidence.splitlines()):
+    for raw_line in evidence.splitlines():
+        if _is_section_or_label(raw_line):
+            continue
+        line = _normalize(raw_line)
         words = line.split()
         if len(words) < len(q_words):
             continue
@@ -128,12 +151,11 @@ def _candidate_supported_by_evidence(name: str, evidence: str) -> bool:
 async def _local_ollama_extract(evidence: str) -> dict:
     parsed = urlparse(OLLAMA_URL)
     urls = [OLLAMA_URL]
-    # The user's machine exposes Ollama on 127.0.0.1:11434, not 192.168.28.3:11434.
     if parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0", "192.168.28.3"}:
         urls.append("http://127.0.0.1:11434/api/chat")
     prompt = f'''Identify every DISTINCT video game title actually supported by this evidence.
 Return ONLY JSON: {{"candidates":[{{"name":"Exact title","confidence":95,"reason":"concrete evidence","evidence_type":"ocr|audio|visual|metadata"}}]}}
-Never output genres, marketing sentences, creator commentary, or generic words. Correct obvious OCR mistakes only when the evidence supports the correction. Prefer exact visible title/logo text. Do not invent a title absent from the evidence.
+Never output section headings, evidence labels, genres, marketing sentences, creator commentary, or generic words. Correct obvious OCR mistakes only when the evidence supports the correction. Prefer exact visible title/logo text. Do not invent a title absent from the evidence.
 EVIDENCE:\n{evidence[:MAX_EVIDENCE_CHARS]}'''
     payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict game-title extraction engine."}, {"role": "user", "content": prompt}], "options": {"temperature": OLLAMA_TEMPERATURE}}
     for url in dict.fromkeys(urls):
@@ -171,6 +193,9 @@ async def _identify_from_evidence(evidence: str) -> dict:
         name = str(item.get("name", "")).strip()
         if not name:
             continue
+        if _is_section_or_label(name):
+            log(f"Game detector candidate rejected | raw={name!r} | reason=evidence section/label")
+            continue
         evidence_type = str(item.get("evidence_type", "")).casefold()
         if evidence_type != "ocr_title_card" and not _candidate_supported_by_evidence(name, evidence):
             log(f"Game detector candidate rejected | raw={name!r} | reason=not supported by evidence")
@@ -189,11 +214,6 @@ async def _identify_from_evidence(evidence: str) -> dict:
 
 
 async def _steam_ocr_correction(candidate):
-    """Fix small OCR errors such as Frogin' Around -> Froggin' Around.
-
-    This deliberately requires a very strong sequence match, so unrelated fuzzy
-    Steam results cannot be accepted merely because they share a word.
-    """
     name = str(candidate.get("name", "")).strip()
     if len(name) < 3:
         return candidate
@@ -220,7 +240,6 @@ async def _steam_ocr_correction(candidate):
         if not ranked:
             return candidate
         score, seq, word, title, appid = max(ranked)
-        # This accepts the known-good case: score≈0.675, seq≈0.963.
         if seq >= 0.90 and word >= 0.82 and score >= 0.64:
             item = dict(candidate)
             item.update({"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": max(float(item.get("confidence", 0)), score * 100), "correction": title if title != name else item.get("correction")})
