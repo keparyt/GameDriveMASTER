@@ -24,11 +24,27 @@ _cache_signature: tuple[int, int] | None = None
 _lock = asyncio.Lock()
 
 
+# Common shorthand/transcription forms that are unambiguous enough to normalize
+# before the KeparDB fuzzy matcher. These are intentionally small and explicit;
+# arbitrary AI-generated substitutions are never accepted here.
+_TITLE_ALIASES = {
+    "arc 2": "ark 2",
+    "ark ii": "ark 2",
+    "civilization 7": "sid meier s civilization vii",
+    "civilization vii": "sid meier s civilization vii",
+    "stalker 2": "s t a l k e r 2 heart of chornobyl",
+    "stalker 2 heart of chornobyl": "s t a l k e r 2 heart of chornobyl",
+    "hollow knight silk song": "hollow knight silksong",
+    "hollow knight silksong": "hollow knight silksong",
+}
+
+
 def normalize_name(value: str) -> str:
     value = value.casefold().replace("&", " and ")
     value = re.sub(r"[™®©]", "", value)
     value = re.sub(r"[^a-z0-9]+", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
+    return _TITLE_ALIASES.get(value, value)
 
 
 def _match_key(value: str) -> str:
@@ -85,12 +101,15 @@ async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | No
     query = _match_key(game_name)
     if not query:
         return None
+
     exact = [entry for entry in entries if _match_key(entry.name) == query]
     if exact:
         return exact[0]
+
     contained = [entry for entry in entries if query in _match_key(entry.name) or _match_key(entry.name) in query]
     if contained:
         return min(contained, key=lambda entry: len(_match_key(entry.name)))
+
     best: tuple[float, GameDBEntry | None] = (0.0, None)
     for entry in entries:
         candidate = _match_key(entry.name)
@@ -107,9 +126,6 @@ async def enrich_games(games: list[dict]) -> list[dict]:
         original_name = str(item.get("name", "")).strip()
         match = await find_game(original_name)
         if match:
-            # The database is authoritative for the canonical spelling/name.
-            # This corrects typos while ensuring the resulting game actually
-            # exists in the local KeparDB snapshot.
             item["detected_name"] = original_name
             item["name"] = match.name
             item["kepargamedb_name"] = match.name
