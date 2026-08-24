@@ -3,7 +3,7 @@ import asyncio
 import discord
 from discord.ext import commands
 
-from processors.game_detector import process_game_message
+from processors.input_parser import process_game_message
 from utils.helper import log
 
 
@@ -59,17 +59,9 @@ class OnMessage(commands.Cog):
 
     @staticmethod
     def create_result_embed(result: dict) -> discord.Embed:
-        status = result.get("status", "unknown")
-        title = {
-            "queued": "Game Detection Queued",
-            "processing": "Analyzing Game",
-            "unsupported": "Unsupported Source",
-            "error": "Analysis Error",
-        }.get(status, "Game Detection")
-
         embed = discord.Embed(
-            title=f"🎮 {title}",
-            description=result.get("message", "No result yet."),
+            title="🎮 Game Detection Queued",
+            description=result.get("message", "Content accepted."),
         )
 
         sources = result.get("sources", [])
@@ -88,15 +80,15 @@ class OnMessage(commands.Cog):
                 inline=False,
             )
 
-        detected_urls = result.get("urls", [])
-        if detected_urls:
+        urls = result.get("urls", [])
+        if urls:
             embed.add_field(
                 name="Detected links",
-                value="\n".join(detected_urls)[:1024],
+                value="\n".join(urls)[:1024],
                 inline=False,
             )
 
-        attachment_count = result.get("attachment_count")
+        attachment_count = result.get("attachment_count", 0)
         if attachment_count:
             embed.add_field(
                 name="Attachments",
