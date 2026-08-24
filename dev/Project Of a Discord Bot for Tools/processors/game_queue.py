@@ -3,6 +3,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from processors.game_db import find_local_game
+
 QUEUE_FILE = Path("data/game_download_queue.json")
 HISTORY_FILE = Path("data/game_download_history.json")
 BLACKLIST_FILE = Path("data/game_download_blacklist.json")
@@ -38,9 +40,44 @@ def _next_id(queue: list[dict], history: list[dict]) -> int:
     return max(ids, default=0) + 1
 
 
+async def _resolve_queue_url(game: dict) -> tuple[str | None, str | None]:
+    """Prefer the canonical local sdb.html URL, otherwise keep the original URL."""
+    name = str(game.get("name", "")).strip()
+    if name:
+        try:
+            sdb_match = await find_local_game(name)
+            if sdb_match and sdb_match.url:
+                return sdb_match.url, "kepardb"
+        except Exception:
+            # URL resolution must never prevent a game from being queued.
+            pass
+
+    original_url = (
+        game.get("library_url")
+        or game.get("kepargamedb_url")
+        or game.get("steam_url")
+        or game.get("tgdb_url")
+    )
+    original_source = game.get("library_source")
+    return original_url, original_source
+
+
 async def list_queue() -> list[dict]:
+    """Return the queue with legacy entries upgraded to their SDB URL when available."""
     async with _lock:
-        return _load(QUEUE_FILE)
+        queue = _load(QUEUE_FILE)
+        changed = False
+        for item in queue:
+            # New entries already have a resolved queue_url. Legacy entries do not.
+            if not item.get("queue_url"):
+                queue_url, queue_source = await _resolve_queue_url(item)
+                if queue_url:
+                    item["queue_url"] = queue_url
+                    item["queue_url_source"] = queue_source or "original"
+                    changed = True
+        if changed:
+            _save(QUEUE_FILE, queue)
+        return queue
 
 
 async def check_blacklist(game_name: str) -> dict | None:
@@ -61,9 +98,9 @@ async def add_games(
 ) -> tuple[list[dict], list[dict]]:
     """Add games while refusing blacklisted titles.
 
-    The original/store URLs are preserved separately. The queue panel is allowed
-    to resolve a better SDB URL later, without destroying the URL supplied by the
-    analyzer or the source database.
+    Every queued game gets a `queue_url`. The URL is resolved against the local
+    sdb.html first; only when SDB has no matching entry do we fall back to the
+    original URL supplied by the analyzer.
     """
     async with _lock:
         queue = _load(QUEUE_FILE)
@@ -88,11 +125,16 @@ async def add_games(
                 continue
             if key in existing:
                 continue
+
+            queue_url, queue_url_source = await _resolve_queue_url(game)
             item = {
                 "id": next_id,
                 "name": game.get("name"),
-                # Keep every source URL. `queue_url` is deliberately not filled
-                # here because SDB resolution belongs to the public queue panel.
+                # Canonical URL used by the public Massive Library queue panel.
+                # This is always resolved from local sdb.html first.
+                "queue_url": queue_url,
+                "queue_url_source": queue_url_source or "original",
+                # Keep every source URL separately for provenance/fallbacks.
                 "library_url": game.get("library_url"),
                 "library_source": game.get("library_source"),
                 "kepargamedb_url": game.get("kepargamedb_url"),
