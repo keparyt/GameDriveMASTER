@@ -1,12 +1,23 @@
 from datetime import datetime
 
 
-def log(message: str):
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+DEBUG = False
 
+
+def set_debug(enabled: bool):
+    global DEBUG
+    DEBUG = enabled
+    log(f"Debug logging {'enabled' if enabled else 'disabled'}")
+
+
+def log(message: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
+
+
+def debug(message: str):
+    if DEBUG:
+        log(f"[DEBUG] {message}")
 
 
 def success(message: str):
