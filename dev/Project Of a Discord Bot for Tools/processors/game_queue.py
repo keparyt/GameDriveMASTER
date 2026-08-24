@@ -61,8 +61,8 @@ async def add_games(
 ) -> tuple[list[dict], list[dict]]:
     """Add games while refusing blacklisted titles.
 
-    Returns (added, blocked). Blocked entries include the blacklist reason so
-    the caller can tell the requester exactly why they were refused.
+    Returns (added, blocked). Platform metadata is persisted with the queue item
+    so the panel can show console support without re-running detection.
     """
     async with _lock:
         queue = _load(QUEUE_FILE)
@@ -95,6 +95,13 @@ async def add_games(
                 "kepargamedb_url": game.get("kepargamedb_url"),
                 "steam_url": game.get("steam_url"),
                 "steam_appid": game.get("steam_appid"),
+                "tgdb_url": game.get("tgdb_url"),
+                "tgdb_game_id": game.get("tgdb_game_id"),
+                "selected_platform": game.get("selected_platform"),
+                "console_platforms": list(game.get("console_platforms") or game.get("console_names") or []),
+                "console_names": list(game.get("console_names") or game.get("console_platforms") or []),
+                "pc_available": bool(game.get("pc_available", False)),
+                "has_console": bool(game.get("has_console", bool(game.get("console_platforms") or game.get("console_names")))),
                 "confidence": game.get("confidence", 0),
                 "reason": game.get("reason", ""),
                 "requester_id": requester_id,
