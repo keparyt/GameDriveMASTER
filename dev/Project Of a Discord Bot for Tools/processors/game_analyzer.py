@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -138,7 +138,38 @@ def _dedupe_text_lines(lines: list[str]) -> list[str]:
     return result[:MAX_GAMES]
 
 
+def _steam_candidates_from_text(text: str) -> list[dict]:
+    """Treat a Steam app URL as authoritative title evidence, never as a generic URL."""
+    results = []
+    pattern = re.compile(r"https?://(?:store\.)?steampowered\.com/app/(\d+)(?:/([^/?#]+))?/?[^\s]*", re.I)
+    for match in pattern.finditer(text):
+        appid, slug = match.group(1), match.group(2)
+        title = unquote(slug or "").replace("_", " ").strip()
+        if not title:
+            continue
+        # Steam slugs often omit punctuation; keep the human text only if it
+        # clearly contains the same title, otherwise the URL slug wins.
+        before = text[:match.start()].strip()
+        human = before.splitlines()[-1].strip() if before else ""
+        human = re.sub(r"^[\s*•\-–—\d.)]+", "", human)
+        human = re.sub(r"\s*:\s*", ": ", human).strip(" -–—")
+        if human and _similarity(human.replace(": ", " "), title) >= 0.70:
+            title = human
+        results.append({
+            "name": title,
+            "confidence": 100,
+            "reason": f"explicit Steam store URL (appid {appid})",
+            "evidence_type": "steam_url",
+            "steam_appid": appid,
+            "steam_url": match.group(0),
+        })
+    return results
+
+
 async def _extract_direct_text(text: str) -> list[dict]:
+    steam = _steam_candidates_from_text(text)
+    if steam:
+        return steam[:MAX_GAMES]
     lines = [re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", x).strip() for x in text.splitlines() if x.strip()]
     if len(lines) == 1:
         return [{"name": lines[0], "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"}]
@@ -216,15 +247,8 @@ async def _transcribe(video: Path, workdir: Path, index: int = 1) -> str:
 
 
 async def _ocr_image(image: Path) -> str:
-    """OCR an image without requiring the external Tesseract executable.
-
-    RapidOCR is preferred because pytesseract is only a Python wrapper around
-    the separately installed tesseract.exe. Tesseract remains an optional
-    fallback for environments that already have it installed.
-    """
     try:
         from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-
         def prepare_image():
             with Image.open(image) as source:
                 source.verify()
@@ -234,10 +258,7 @@ async def _ocr_image(image: Path) -> str:
                 img = img.resize((img.width * scale, img.height * scale))
             gray = ImageOps.grayscale(img)
             return ImageEnhance.Contrast(gray).enhance(1.7).filter(ImageFilter.SHARPEN)
-
         prepared = await asyncio.to_thread(prepare_image)
-
-        # Preferred OCR engine: no system executable required.
         try:
             from rapidocr_onnxruntime import RapidOCR
             engine = RapidOCR()
@@ -246,110 +267,20 @@ async def _ocr_image(image: Path) -> str:
                 texts = []
                 for item in result:
                     try:
-                        text = str(item[1]).strip()
+                        value = str(item[1]).strip()
                     except (IndexError, TypeError):
                         continue
-                    if text:
-                        texts.append(text)
+                    if value:
+                        texts.append(value)
                 if texts:
                     return "\n".join(dict.fromkeys(texts))
         except Exception as rapid_exc:
             log(f"Game detector RapidOCR fallback | {image.name} | {type(rapid_exc).__name__}: {rapid_exc}")
-
-        # Optional legacy fallback.
         try:
             import pytesseract
-            return "\n".join(
-                pytesseract.image_to_string(prepared, config=f"--psm {psm}")
-                for psm in (6, 11)
-            )
-        except Exception as tess_exc:
-            if type(tess_exc).__name__ != "TesseractNotFoundError":
-                log(f"Game detector Tesseract fallback | {image.name} | {type(tess_exc).__name__}: {tess_exc}")
+            return await asyncio.to_thread(pytesseract.image_to_string, prepared)
+        except Exception:
             return ""
     except Exception as exc:
         log(f"Game detector OCR error | {image.name} | {type(exc).__name__}: {exc}")
         return ""
-
-
-async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
-    verified, unresolved = [], []
-    for candidate in _dedupe_candidates(candidates):
-        original = str(candidate.get("name", "")).strip()
-        if not original:
-            continue
-        platform = await verify_game(original)
-        if platform is None:
-            unresolved.append({"name": candidate.get("detected_name", original), "detected_name": candidate.get("detected_name", original), "confidence": float(candidate.get("confidence", 0)), "reason": "TheGamesDB could not verify a console release for this title.", "requires_store_link": True})
-            continue
-        steam = await _find_steam_match(original)
-        if steam:
-            item = dict(candidate)
-            item.update(steam)
-            item["detected_name"] = candidate.get("detected_name", original)
-            item["verified"] = True
-            item["verification_source"] = "steam"
-            item["library_url"] = item["steam_url"]
-            item["library_source"] = "steam"
-            item["tgdb_game_id"] = platform.game_id
-            item["tgdb_url"] = platform.url
-            item["selected_platform"] = platform.selected_platform_name
-            item["console_platforms"] = platform.console_names
-            item["console_names"] = platform.console_names
-            item["pc_available"] = bool(platform.pc_platform)
-            item["has_console"] = True
-            verified.append(item)
-            continue
-        db = await find_game(original)
-        if db and _credible_name_match(original, db.name, KEPARDB_MATCH_THRESHOLD):
-            item = dict(candidate)
-            item.update({"name": db.name, "detected_name": candidate.get("detected_name", original), "verified": True, "verification_source": db.source, "library_url": db.url, "library_source": db.source, "tgdb_game_id": db.tgdb_game_id, "tgdb_url": f"https://thegamesdb.net/game.php?id={db.tgdb_game_id}" if db.tgdb_game_id else None, "selected_platform": db.selected_platform, "console_platforms": list(db.console_platforms), "console_names": list(db.console_platforms), "pc_available": db.pc_available, "has_console": bool(db.console_platforms)})
-            verified.append(item)
-            continue
-        item = dict(candidate)
-        item.update({"detected_name": candidate.get("detected_name", original), "name": getattr(platform, "game_title", None) or getattr(platform, "name", None) or original, "verified": True, "verification_source": "thegamesdb", "library_url": platform.url, "library_source": "thegamesdb", "tgdb_game_id": platform.game_id, "tgdb_url": platform.url, "selected_platform": platform.selected_platform_name, "console_platforms": platform.console_names, "console_names": platform.console_names, "pc_available": bool(platform.pc_platform), "has_console": True, "steam_verified": False})
-        verified.append(item)
-    return verified[:MAX_GAMES], unresolved
-
-
-async def _find_steam_match(query: str) -> dict | None:
-    try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "KeparGameDetector/1.0"}) as session:
-            async with session.get("https://store.steampowered.com/search/", params={"term": query, "cc": "ca", "l": "english"}, timeout=15) as response:
-                if response.status != 200:
-                    return None
-                html = await response.text()
-        soup = BeautifulSoup(html, "html.parser")
-        ranked = []
-        for row in soup.select("a.search_result_row[data-ds-appid]")[:20]:
-            node, appid = row.select_one(".title"), row.get("data-ds-appid")
-            if not node or not appid or not str(appid).isdigit():
-                continue
-            title = " ".join(node.stripped_strings).strip()
-            seq, word = _similarity(query, title), _word_similarity(query, title)
-            ranked.append((seq * .45 + word * .55, title, int(appid)))
-        if not ranked:
-            return None
-        score, title, appid = max(ranked)
-        if not _credible_name_match(query, title, STEAM_MATCH_THRESHOLD):
-            return None
-        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": score * 100}
-    except Exception as exc:
-        log(f"Steam verification error | {query} | {type(exc).__name__}: {exc}")
-        return None
-
-
-def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
-    unresolved = unresolved or []
-    if not games:
-        message = "No identified game could be verified."
-        if unresolved:
-            message += " Please provide a direct game/store page link for each unresolved game."
-        return {"status": "needs_store_link" if unresolved else "unknown", "message": message, "game_count": 0, "games": [], "unresolved_games": unresolved, "requires_store_link": bool(unresolved)}
-    first = games[0]
-    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": ""}
-
-
-async def analyze_game_input(data: dict) -> dict:
-    from processors.game_media_analyzer import analyze_game_input as evidence_analyzer
-    return await evidence_analyzer(data)
