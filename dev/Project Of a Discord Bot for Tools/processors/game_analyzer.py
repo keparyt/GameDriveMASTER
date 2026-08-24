@@ -1,6 +1,5 @@
 import asyncio
 import difflib
-import json
 import os
 import re
 import shutil
@@ -13,6 +12,7 @@ from bs4 import BeautifulSoup
 
 from processors.game_db import find_game, normalize_name
 from processors.thegamesdb import verify_game
+from processors.instagram_scraper import is_instagram_url, scrape_post
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
@@ -117,9 +117,7 @@ INPUT: {name}"""
         corrected = str(body.get("message", {}).get("content", "")).strip()
         corrected = re.sub(r"```.*?```", "", corrected, flags=re.DOTALL).strip()
         corrected = corrected.splitlines()[-1].strip(" \"'`*•") if corrected else ""
-        if not corrected or len(corrected) > 150:
-            return name
-        return corrected
+        return corrected if corrected and len(corrected) <= 150 else name
     except Exception as exc:
         log(f"Game detector DeepSeek correction error | {name!r} | {type(exc).__name__}: {exc}")
         return name
@@ -127,14 +125,7 @@ INPUT: {name}"""
 
 def _is_instagram_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
-    return host in {"instagram.com", "www.instagram.com", "m.instagram.com"} and re.search(r"/(p|reel|reels|tv)/", url, re.I) is not None
-
-
-async def _extract_direct_text(text: str) -> list[dict]:
-    lines = [re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", x).strip() for x in text.splitlines() if x.strip()]
-    if len(lines) == 1:
-        return [{"name": lines[0], "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"}]
-    return [{"name": x, "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"} for x in _dedupe_text_lines(lines)]
+    return is_instagram_url(url) or (host in {"instagram.com", "www.instagram.com", "m.instagram.com"} and re.search(r"/(p|reel|reels|tv)/", url, re.I) is not None)
 
 
 def _dedupe_text_lines(lines: list[str]) -> list[str]:
@@ -147,92 +138,45 @@ def _dedupe_text_lines(lines: list[str]) -> list[str]:
     return result[:MAX_GAMES]
 
 
+async def _extract_direct_text(text: str) -> list[dict]:
+    lines = [re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", x).strip() for x in text.splitlines() if x.strip()]
+    if len(lines) == 1:
+        return [{"name": lines[0], "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"}]
+    return [{"name": x, "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"} for x in _dedupe_text_lines(lines)]
+
+
 async def _download_url(url: str, workdir: Path) -> tuple[dict, list[Path]]:
-    """Download social media media without failing an Instagram carousel on image-only entries."""
+    """Download media. Instagram is deliberately NOT sent through yt-dlp."""
+    if _is_instagram_url(url):
+        # Instagram carousels are a structured post containing independent
+        # image/video children. Instaloader handles this correctly and avoids
+        # yt-dlp's misleading "No video formats found" errors for image slides.
+        try:
+            return await scrape_post(url, workdir)
+        except Exception as exc:
+            log(f"Game detector Instagram scraper error | {url} | {type(exc).__name__}: {exc}")
+            raise RuntimeError(f"Instagram extraction failed: {exc}") from exc
+
     if not _tool("yt-dlp"):
         raise RuntimeError("yt-dlp is not installed")
-
-    instagram = _is_instagram_url(url)
-    output = str(workdir / ("instagram_%(playlist_index)03d.%(ext)s" if instagram else "source.%(ext)s"))
-
-    # IMPORTANT: --dump-single-json can fail an entire Instagram carousel when
-    # one image entry has no video formats. Use one JSON object per entry and
-    # ignore individual extractor failures instead.
-    metadata_cmd = ["yt-dlp", "--no-warnings", "--ignore-errors", "--dump-json", "--yes-playlist" if instagram else "--no-playlist", url]
+    output = str(workdir / "source.%(ext)s")
+    metadata_cmd = ["yt-dlp", "--no-warnings", "--ignore-errors", "--dump-json", "--no-playlist", url]
     meta_proc = await asyncio.to_thread(_run, metadata_cmd, 180)
     entries = []
     for line in meta_proc.stdout.splitlines():
         try:
-            value = json.loads(line)
+            value = __import__("json").loads(line)
             if isinstance(value, dict):
                 entries.append(value)
-        except json.JSONDecodeError:
+        except Exception:
             pass
-
-    # Fallback metadata pass. Flat playlist discovery is useful when normal
-    # format extraction refuses image-only entries.
-    if not entries and instagram:
-        fallback = ["yt-dlp", "--no-warnings", "--ignore-errors", "--flat-playlist", "--dump-json", "--yes-playlist", url]
-        proc = await asyncio.to_thread(_run, fallback, 180)
-        for line in proc.stdout.splitlines():
-            try:
-                value = json.loads(line)
-                if isinstance(value, dict):
-                    entries.append(value)
-            except json.JSONDecodeError:
-                pass
-
     root = entries[0] if entries else {}
-    metadata = {
-        "title": root.get("title"),
-        "description": root.get("description"),
-        "uploader": root.get("uploader") or root.get("channel"),
-        "entries": entries,
-    }
-
-    download_cmd = ["yt-dlp", "--no-warnings", "--ignore-errors", "--restrict-filenames", "--yes-playlist" if instagram else "--no-playlist", "-o", output]
-    if instagram:
-        download_cmd += ["--playlist-end", str(MAX_SOCIAL_MEDIA_ITEMS)]
-    download_cmd.append(url)
-    dl_proc = await asyncio.to_thread(_run, download_cmd, 360)
-
-    media = []
-    for pattern in ("instagram_*", "source.*"):
-        media.extend(p for p in workdir.glob(pattern) if p.is_file() and p.suffix.lower() not in {".json", ".part", ".ytdl"})
-    media = sorted(dict.fromkeys(media), key=lambda p: p.name)
-
-    # CRITICAL CAROUSEL FALLBACK:
-    # Image-only Instagram entries often log "No video formats found". Their
-    # thumbnail is still a real image and can be OCR'd. Download every entry's
-    # thumbnail independently so all carousel slides are analyzed.
-    if instagram:
-        existing = {p.resolve() for p in media}
-        async with aiohttp.ClientSession(headers={"User-Agent": "KeparGameDetector/1.0"}) as session:
-            for index, entry in enumerate(entries[:MAX_SOCIAL_MEDIA_ITEMS], start=1):
-                image_url = entry.get("thumbnail") or entry.get("url")
-                if not isinstance(image_url, str) or not image_url.startswith("http"):
-                    continue
-                target = workdir / f"instagram_carousel_{index:03d}.jpg"
-                try:
-                    async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=45)) as response:
-                        response.raise_for_status()
-                        content_type = (response.headers.get("Content-Type") or "").lower()
-                        if "image" not in content_type and not re.search(r"\.(?:jpe?g|png|webp)(?:\?|$)", image_url, re.I):
-                            continue
-                        data = await response.read()
-                    if data:
-                        target.write_bytes(data)
-                        if target.resolve() not in existing:
-                            media.append(target)
-                            existing.add(target.resolve())
-                            log(f"Game detector Instagram carousel | image fallback downloaded | item={index}")
-                except Exception as exc:
-                    log(f"Game detector Instagram carousel image error | item={index} | {type(exc).__name__}: {exc}")
-
+    metadata = {"title": root.get("title"), "description": root.get("description"), "uploader": root.get("uploader") or root.get("channel"), "entries": entries}
+    dl_proc = await asyncio.to_thread(_run, ["yt-dlp", "--no-warnings", "--ignore-errors", "--restrict-filenames", "--no-playlist", "-o", output, url], 360)
+    media = sorted([p for p in workdir.glob("source.*") if p.is_file() and p.suffix.lower() not in {".json", ".part", ".ytdl"}], key=lambda p: p.name)
     if not entries and not media:
         error = (dl_proc.stderr or meta_proc.stderr or "unknown yt-dlp error").strip()
         raise RuntimeError(error[-2000:])
-
     return metadata, media[:MAX_SOCIAL_MEDIA_ITEMS]
 
 
@@ -290,39 +234,6 @@ async def _ocr_image(image: Path) -> str:
     except Exception as exc:
         log(f"Game detector OCR error | {image.name} | {type(exc).__name__}: {exc}")
         return ""
-
-
-async def _ocr_video_frames(video: Path, workdir: Path, index: int) -> str:
-    if not _tool("ffmpeg"):
-        return ""
-    frame_dir = workdir / f"frames_{index}"
-    frame_dir.mkdir(parents=True, exist_ok=True)
-    # Spread frames through the full duration. This is intentionally not a
-    # first-frame shortcut because game UI/title cards may appear later.
-    duration_proc = await asyncio.to_thread(_run, ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(video)], 30) if _tool("ffprobe") else None
-    try:
-        duration = float(duration_proc.stdout.strip()) if duration_proc and duration_proc.returncode == 0 else 0.0
-    except ValueError:
-        duration = 0.0
-    count = 18
-    frames = []
-    if duration > 0:
-        for i in range(count):
-            ts = duration * i / max(1, count - 1)
-            output = frame_dir / f"frame_{i:03d}.jpg"
-            proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-ss", f"{ts:.3f}", "-i", str(video), "-frames:v", "1", "-vf", "scale=1600:-1", str(output)], 30)
-            if proc.returncode == 0 and output.exists():
-                frames.append(output)
-    else:
-        proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-i", str(video), "-vf", "fps=1/2,scale=1600:-1", "-frames:v", str(count), str(frame_dir / "frame_%03d.jpg")], 120)
-        if proc.returncode == 0:
-            frames = sorted(frame_dir.glob("*.jpg"))
-    parts = []
-    for frame in frames:
-        text = await _ocr_image(frame)
-        if text.strip():
-            parts.append(f"{frame.name}:\n{text[:2500]}")
-    return "\n\n".join(parts)
 
 
 async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -403,7 +314,8 @@ def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": ""}
 
 
-# Compatibility helper for any older code importing the original analyzer.
+# Compatibility helper for older imports. The evidence-first analyzer owns the
+# actual OCR/visual-analysis pipeline.
 async def analyze_game_input(data: dict) -> dict:
     from processors.game_media_analyzer import analyze_game_input as evidence_analyzer
     return await evidence_analyzer(data)
