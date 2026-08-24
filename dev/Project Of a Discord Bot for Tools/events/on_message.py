@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from processors.game_analyzer import analyze_game_input
 from processors.game_queue import add_games, list_queue
+from processors.game_queue_panel import get_panel_message_id, set_panel_message_id
 from processors.input_parser import process_game_message
 from utils.helper import log
 
@@ -13,6 +14,7 @@ from utils.helper import log
 GAME_DETECTOR_CHANNEL_ID = 1541167588476981339
 GAME_QUEUE_CHANNEL_ID = 1541255483917074463
 INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
+QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
 
 
 def normalize_game_name(value: str) -> str:
@@ -69,6 +71,18 @@ class GameSelectionView(discord.ui.View):
 class OnMessage(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._queue_panel_ready = False
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # Reconnect/restart safe: the queue itself is loaded from disk and the
+        # exact Discord panel message is remembered by message ID.
+        try:
+            await self.refresh_queue_panel()
+            self._queue_panel_ready = True
+            log("Game queue panel restored.")
+        except Exception as exc:
+            log(f"Game queue panel restore error | {type(exc).__name__}: {exc}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -84,7 +98,6 @@ class OnMessage(commands.Cog):
         await self.bot.process_commands(message)
 
     async def installed_game_names(self) -> set[str]:
-        """Read every message in the installed-games channel; each message is a game name."""
         channel = self.bot.get_channel(INSTALLED_GAMES_CHANNEL_ID)
         if channel is None:
             try:
@@ -100,6 +113,29 @@ class OnMessage(commands.Cog):
         except (discord.Forbidden, discord.HTTPException) as exc:
             log(f"Installed games history error | {type(exc).__name__}: {exc}")
         return names
+
+    async def _find_existing_panel(self, channel) -> discord.Message | None:
+        message_id = await get_panel_message_id()
+        if message_id:
+            try:
+                return await channel.fetch_message(message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                # The saved message may have been manually deleted. Fall back to
+                # finding an older panel and then create one if necessary.
+                pass
+
+        try:
+            async for message in channel.history(limit=100):
+                if (
+                    message.author.id == self.bot.user.id
+                    and message.embeds
+                    and message.embeds[0].title == QUEUE_PANEL_TITLE
+                ):
+                    await set_panel_message_id(message.id)
+                    return message
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log(f"Queue panel history error | {type(exc).__name__}: {exc}")
+        return None
 
     async def refresh_queue_panel(self):
         channel = self.bot.get_channel(GAME_QUEUE_CHANNEL_ID)
@@ -117,27 +153,23 @@ class OnMessage(commands.Cog):
             shown = f"[{name}]({url})" if url else name
             lines.append(f"**{index}. {shown}**")
 
-        embed = discord.Embed(
-            title="📥 Massive Library — Download Queue",
-            description=("Games selected by users that still need to be downloaded.\n\n" +
-                         ("\n".join(lines[:50]) if lines else "No games are currently waiting.")),
-        )
+        description = "Games selected by users that still need to be downloaded.\n\n"
+        description += "\n".join(lines[:50]) if lines else "No games are currently waiting."
+        embed = discord.Embed(title=QUEUE_PANEL_TITLE, description=description[:4096])
         embed.set_footer(text=f"{len(pending)} game(s) waiting • Installed games are checked against channel {INSTALLED_GAMES_CHANNEL_ID}")
 
-        # Keep one bot-owned panel at the bottom; update it instead of spamming the queue channel.
-        panel = None
-        try:
-            async for message in channel.history(limit=100):
-                if message.author.id == self.bot.user.id and message.embeds and message.embeds[0].title == "📥 Massive Library — Download Queue":
-                    panel = message
-                    break
-        except discord.HTTPException:
-            pass
-
+        panel = await self._find_existing_panel(channel)
         if panel:
-            await panel.edit(embed=embed)
-        else:
-            await channel.send(embed=embed)
+            try:
+                await panel.edit(embed=embed)
+                await set_panel_message_id(panel.id)
+                return panel
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                log(f"Queue panel edit error | {type(exc).__name__}: {exc}")
+
+        panel = await channel.send(embed=embed)
+        await set_panel_message_id(panel.id)
+        return panel
 
     async def handle_game_detection(self, message: discord.Message):
         status_message = None
