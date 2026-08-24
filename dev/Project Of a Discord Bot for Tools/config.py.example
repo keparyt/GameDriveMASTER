@@ -1,27 +1,82 @@
+# ============================================================
+# KEPAR LAB ASSIST — CONFIGURATION
+# Copy this file to config.py and fill in the values.
+# config.py is intentionally ignored by git because it contains secrets.
+# ============================================================
+
+# Discord
 TOKEN = ""
+MASTER_ID = 0
+GAME_PARSER_GUILD_ID = 1537864271344705597
+GAME_PARSER_ROLE_ID = 1537864526903513180
+GAME_DETECTOR_CHANNEL_ID = 1541167588476981339
+GAME_QUEUE_CHANNEL_ID = 1541255483917074463
+INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
+QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
+ANALYSIS_PANEL_TIMEOUT = 24 * 60 * 60
 
+# Local AI / Ollama
+OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+OLLAMA_MODEL = "deepseek-r1:7b"
+OLLAMA_VISION_MODEL = ""
+OLLAMA_TIMEOUT_SECONDS = 180
+OLLAMA_VISION_TIMEOUT_SECONDS = 120
+OLLAMA_TEMPERATURE = 0
+OLLAMA_USER_AGENT = "KeparGameDetector/1.0"
 
-# Home LAN connection configuration
+# Game analysis / performance
+MAX_GAMES = 25
+MAX_SOCIAL_MEDIA_ITEMS = 20
+MAX_TRANSCRIPT_CHARS = 12000
+MAX_OCR_CHARS_PER_FRAME = 2500
+DESCRIPTION_MAX_CHARS = 6000
+MAX_EVIDENCE_CHARS = 50000
+VIDEO_FRAME_COUNT = 10
+VISION_IMAGE_LIMIT = 6
+MEDIA_CONCURRENCY = 3
+URL_CONCURRENCY = 3
+MAX_SOURCE_URLS = 10
+STEAM_MATCH_THRESHOLD = 0.88
+KEPARDB_MATCH_THRESHOLD = 0.88
 
+# External game databases
+KEPAR_DB_URL_PREFIX = "https://kepardb.com"
+SDB_HTML_PATH = "sdb.html"
+THEGAMESDB_API_KEY = ""
+
+# Steam
+STEAM_SEARCH_URL = "https://store.steampowered.com/search/"
+STEAM_COUNTRY = "ca"
+STEAM_LANGUAGE = "english"
+STEAM_USER_AGENT = "KeparGameDetector/1.0"
+STEAM_REQUEST_TIMEOUT_SECONDS = 15
+
+# OCR / media tools
+FFMPEG_BINARY = "ffmpeg"
+FFPROBE_BINARY = "ffprobe"
+TESSERACT_BINARY = "tesseract"
+OCR_IMAGE_MAX_WIDTH = 2400
+OCR_IMAGE_MAX_HEIGHT = 2400
+
+# LAN connection service
 LAN_WEB_HOST = "0.0.0.0"
 LAN_WEB_PORT = 9999
-
-# URL users will receive from Discord.
 LAN_BASE_URL = "http://192.168.28.7:9999"
-
-# Your home LAN subnet.
 LAN_NETWORK = "192.168.28.0/24"
-
-# Discord role that users receive while connected.
 HOME_ROLE_ID = 0
-
-# Seconds before a connection is considered dead.
 LAN_CONNECTION_TIMEOUT = 600
 
-# Local KeparGameDB snapshot links are resolved against this prefix.
-# Example: href="games/my-game" -> https://kepardb.com/games/my-game
-KEPAR_DB_URL_PREFIX = "https://kepardb.com"
-
-# TheGamesDB API key. Keep the real key out of git; alternatively set
-# THEGAMESDB_API_KEY in the process environment.
-THEGAMESDB_API_KEY = ""
+# General bot behavior
+COMMAND_PREFIX = "!"
+LOG_LEVEL = "INFO"
+SUPPORTED_SOCIAL_HOSTS = {
+    "instagram.com": "Instagram",
+    "www.instagram.com": "Instagram",
+    "m.instagram.com": "Instagram",
+    "tiktok.com": "TikTok",
+    "www.tiktok.com": "TikTok",
+    "vm.tiktok.com": "TikTok",
+    "vt.tiktok.com": "TikTok",
+}
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
