@@ -29,6 +29,28 @@ def console_text(game: dict) -> str:
     return ", ".join(dict.fromkeys(consoles))
 
 
+def original_input_text(message: discord.Message, parsed: dict | None = None) -> str:
+    """Build a compact, useful record of what the user actually submitted."""
+    content = (message.content or "").strip()
+    urls = []
+    if parsed:
+        urls.extend(str(x) for x in parsed.get("urls") or [])
+        urls.extend(str(x) for x in parsed.get("unsupported_urls") or [])
+    if not urls:
+        urls = re.findall(r"https?://[^\s<>]+", content, flags=re.I)
+
+    parts = []
+    if content:
+        parts.append(content)
+    for attachment in message.attachments:
+        parts.append(f"[attachment] {attachment.filename} — {attachment.url}")
+    for url in urls:
+        if url not in parts and url not in content:
+            parts.append(url)
+    text = "\n".join(parts).strip()
+    return text or "[No text — media/attachment input]"
+
+
 class GameSelectionView(discord.ui.View):
     def __init__(self, cog, games: list[dict], installed_names: set[str]):
         super().__init__(timeout=300)
@@ -144,11 +166,7 @@ class OnMessage(commands.Cog):
             name = str(game.get("name", "Unknown game"))
             url = game.get("library_url") or game.get("kepargamedb_url") or game.get("steam_url") or game.get("tgdb_url")
             shown = f"[{name}]({url})" if url else name
-            source = {
-                "kepargamedb": "KeparGameDB",
-                "steam": "Steam",
-                "thegamesdb": "TheGamesDB",
-            }.get(game.get("library_source"), str(game.get("library_source") or "GameDB"))
+            source = {"kepargamedb": "KeparGameDB", "steam": "Steam", "thegamesdb": "TheGamesDB"}.get(game.get("library_source"), str(game.get("library_source") or "GameDB"))
             requester = self.requester_text(game)
             selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
@@ -171,37 +189,61 @@ class OnMessage(commands.Cog):
 
     async def handle_game_detection(self, message: discord.Message):
         status_message = None
+        parsed = None
+        # Save the original user input before deleting the message.
+        captured_input = original_input_text(message)
         try:
             parsed = await process_game_message(message)
             if parsed is None:
                 return
+            captured_input = original_input_text(message, parsed)
+
+            # Discord only supports ephemeral responses for interactions (slash
+            # commands, buttons, select menus, etc.). A normal on_message event
+            # cannot send an ephemeral message. We therefore delete the user's
+            # message and keep the captured input in the bot's result embed.
+            # This keeps the detector channel clean while retaining exactly what
+            # was submitted for audit/debugging.
+            try:
+                await message.delete()
+                log(f"Game detector | deleted user input | message={message.id}")
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                log(f"Game detector | input delete failed | message={message.id} | {type(exc).__name__}: {exc}")
+
             if parsed.get("status") == "unsupported_url":
                 urls = "\n".join(f"• {url}" for url in parsed.get("unsupported_urls", []))
-                embed = discord.Embed(title="🔗 Game URL Required", description=f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n**Unrecognized URL(s):**\n{urls}\n\nFor a game, send its **direct Steam or KeparDB store page URL** and its proper game name.")
-                await message.reply(embed=embed, mention_author=False)
+                embed = discord.Embed(title="🔗 Game URL Required", description=f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n**Unrecognized URL(s):**\n{urls}\n\n**Original input:**\n```{captured_input[:900]}```")
+                await message.channel.send(embed=embed)
                 return
 
-            status_message = await message.reply(embed=discord.Embed(title="🎮 Analyzing Games...", description="Collecting metadata, transcribing audio, extracting OCR and identifying every distinct game..."), mention_author=False)
+            status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Collecting metadata, transcribing audio, extracting OCR and identifying every distinct game.")
+            status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
+            status_message = await message.channel.send(embed=status_embed)
+
             result = await analyze_game_input(parsed)
             installed = await self.installed_game_names()
             games = result.get("games") or []
             view = GameSelectionView(self, games, installed) if games else None
-            await status_message.edit(embed=self.create_result_embed(result, installed), view=view)
+            result_embed = self.create_result_embed(result, installed, captured_input)
+            await status_message.edit(embed=result_embed, view=view)
         except Exception as error:
             log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
-            embed = discord.Embed(title="❌ Game Detection Failed", description="Something went wrong while analyzing that content.")
+            embed = discord.Embed(title="❌ Game Detection Failed", description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```")
             if status_message:
                 await status_message.edit(embed=embed)
             else:
-                await message.reply(embed=embed, mention_author=False)
+                await message.channel.send(embed=embed)
 
     @classmethod
-    def create_result_embed(cls, result: dict, installed_names: set[str]) -> discord.Embed:
+    def create_result_embed(cls, result: dict, installed_names: set[str], captured_input: str | None = None) -> discord.Embed:
         games = result.get("games") or []
         unresolved = result.get("unresolved_games") or []
         status = result.get("status")
         if not games and status not in {"partial", "identified"}:
-            return discord.Embed(title="🎮 Game Not Identified", description=result.get("message", "I couldn't identify the game."))
+            embed = discord.Embed(title="🎮 Game Not Identified", description=result.get("message", "I couldn't identify the game."))
+            if captured_input:
+                embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
+            return embed
 
         title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
         description = f"Found **{len(games)}** verified game(s). Select which game(s) should be sent to the massive library download queue."
@@ -209,6 +251,9 @@ class OnMessage(commands.Cog):
             unresolved_names = ", ".join(str(item.get("name", "Unknown game")) for item in unresolved)
             description += f"\n\n⚠️ **Not verified and excluded:** {unresolved_names}"
         embed = discord.Embed(title=title, description=description[:4096])
+
+        if captured_input:
+            embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
 
         lines = []
         for index, game in enumerate(games, start=1):
