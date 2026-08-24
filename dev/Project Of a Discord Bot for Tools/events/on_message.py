@@ -17,6 +17,11 @@ INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
 QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
 ANALYSIS_PANEL_TIMEOUT = 24 * 60 * 60
 
+# Game parsing is restricted to members who have this role in this server.
+# The check is also applied to DMs by looking the user up in the configured guild.
+GAME_PARSER_GUILD_ID = 1537864271344705597
+GAME_PARSER_ROLE_ID = 1537864526903513180
+
 
 def normalize_game_name(value: str) -> str:
     value = re.sub(r"[^a-z0-9]+", " ", value.casefold())
@@ -154,6 +159,45 @@ class OnMessage(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def _has_game_parser_role(self, user: discord.abc.User) -> bool:
+        """Return True only when the user has the dedicated game-parser role.
+
+        For guild messages we verify the exact configured guild and role. For DMs,
+        Discord does not expose guild roles on the DM message, so the user's member
+        record is looked up in the configured guild before any parsing starts.
+        """
+        try:
+            if isinstance(user, discord.Member):
+                if user.guild.id != GAME_PARSER_GUILD_ID:
+                    log(f"Game parser authorization denied | user={user.id} | guild={user.guild.id} | reason=wrong_guild")
+                    return False
+                allowed = any(role.id == GAME_PARSER_ROLE_ID for role in user.roles)
+                if not allowed:
+                    log(f"Game parser authorization denied | user={user.id} | guild={user.guild.id} | reason=missing_role")
+                return allowed
+
+            guild = self.bot.get_guild(GAME_PARSER_GUILD_ID)
+            if guild is None:
+                try:
+                    guild = await self.bot.fetch_guild(GAME_PARSER_GUILD_ID)
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    log(f"Game parser authorization failed | user={user.id} | reason=guild_unavailable | {type(exc).__name__}: {exc}")
+                    return False
+
+            try:
+                member = guild.get_member(user.id) or await guild.fetch_member(user.id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                log(f"Game parser authorization denied | user={user.id} | reason=not_a_guild_member | {type(exc).__name__}")
+                return False
+
+            allowed = any(role.id == GAME_PARSER_ROLE_ID for role in member.roles)
+            if not allowed:
+                log(f"Game parser authorization denied | user={user.id} | guild={guild.id} | reason=missing_role")
+            return allowed
+        except Exception as exc:
+            log(f"Game parser authorization error | user={getattr(user, 'id', 'unknown')} | {type(exc).__name__}: {exc}")
+            return False
+
     @commands.Cog.listener()
     async def on_ready(self):
         try:
@@ -169,7 +213,10 @@ class OnMessage(commands.Cog):
         guild_name = message.guild.name if message.guild else "DM"
         log(f"Message | {message.author} | {guild_name} | {message.content}")
         if message.channel.id == GAME_DETECTOR_CHANNEL_ID:
-            asyncio.create_task(self.handle_game_detection(message))
+            if await self._has_game_parser_role(message.author):
+                asyncio.create_task(self.handle_game_detection(message))
+            else:
+                log(f"Game detector ignored | message={message.id} | user={message.author.id} | reason=missing_required_role")
         await self.bot.process_commands(message)
 
     async def installed_game_names(self) -> set[str]:
@@ -274,6 +321,12 @@ class OnMessage(commands.Cog):
         parsed = None
         captured_input = original_input_text(message)
         try:
+            # Defense in depth: authorization is checked again immediately before
+            # parsing so a queued task cannot continue after a role is removed.
+            if not await self._has_game_parser_role(message.author):
+                log(f"Game detector aborted | message={message.id} | user={message.author.id} | reason=missing_required_role")
+                return
+
             parsed = await process_game_message(message)
             if parsed is None:
                 return
