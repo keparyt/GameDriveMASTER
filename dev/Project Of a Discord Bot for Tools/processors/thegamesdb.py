@@ -86,7 +86,6 @@ def _score(query: str, title: str) -> float:
     union=len(qt|tt) or 1
     token=len(qt&tt)/union
     coverage=len(qt&tt)/(len(qt) or 1)
-    # Character similarity handles Whisper phonetic errors such as Frogin -> Froggin.
     return seq*0.45+token*0.20+coverage*0.35
 
 def _is_pc_platform(name: str) -> bool:
@@ -167,44 +166,127 @@ async def _search_games(query:str)->list[tuple[float,dict[str,Any],TGDBPlatform]
         if platform and title:ranked.append((_score(query,title),game,platform))
     return sorted(ranked,key=lambda x:x[0],reverse=True)
 
+def _steam_query_variants(query: str) -> list[str]:
+    """Create a small set of safe search variants for speech-recognition typos.
+
+    Whisper often drops a repeated consonant (Froggin -> Frogin). We do not
+    blindly fuzzy-match arbitrary Steam results; instead we ask Steam for a few
+    deterministic spelling variants and then score the returned titles.
+    """
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        value = re.sub(r"\s+", " ", str(value or "").strip())
+        key = _norm(value)
+        if value and key and key not in seen:
+            seen.add(key)
+            variants.append(value)
+
+    add(query)
+    add(re.sub(r"['’`\"]", "", query))
+    add(_norm(query))
+
+    # Generate one-letter-doubled variants per word. This catches common
+    # transcription errors such as Frogin -> Froggin without accepting random
+    # unrelated titles by itself.
+    words = re.findall(r"[A-Za-z]+", query)
+    for wi, word in enumerate(words):
+        if len(word) < 3 or len(word) > 18:
+            continue
+        for i, ch in enumerate(word):
+            if not ch.isalpha():
+                continue
+            mutated = word[:i] + ch + word[i:]
+            mutated_words = list(words)
+            mutated_words[wi] = mutated
+            add(" ".join(mutated_words))
+
+    return variants[:24]
+
+async def _steam_search(query: str, session: aiohttp.ClientSession) -> list[tuple[float,float,str,int,str]]:
+    """Search Steam using several typo-tolerant query variants."""
+    results: dict[int, tuple[float,float,str,int,str]] = {}
+    variants = _steam_query_variants(query)
+    for variant in variants:
+        try:
+            async with session.get(
+                "https://store.steampowered.com/search/",
+                params={"term":variant,"cc":"ca","l":"english"},
+                timeout=12,
+            ) as response:
+                if response.status != 200:
+                    log(f"Steam fallback | HTTP {response.status} | query={variant!r}")
+                    continue
+                html = await response.text()
+        except Exception as exc:
+            log(f"Steam fallback request error | query={variant!r} | {type(exc).__name__}: {exc}")
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+        for row in soup.select("a.search_result_row[data-ds-appid]")[:50]:
+            title_node = row.select_one(".title")
+            appid = row.get("data-ds-appid")
+            if not title_node or not appid or not str(appid).isdigit():
+                continue
+            title = " ".join(title_node.stripped_strings).strip()
+            if not title:
+                continue
+            score = _score(query, title)
+            seq = difflib.SequenceMatcher(None, _norm(query), _norm(title)).ratio()
+            if _norm(query) == _norm(title):
+                score = 1.0
+            item = (score, seq, title, int(appid), variant)
+            old = results.get(int(appid))
+            if old is None or (score, seq) > (old[0], old[1]):
+                results[int(appid)] = item
+
+    return sorted(results.values(), key=lambda x: (x[0], x[1]), reverse=True)
+
 async def _steam_fallback(query: str) -> TGDBGameInfo | None:
     """Find a real Steam title when TGDB has no entry.
 
-    This is deliberately identity-only. It does not fabricate console releases.
-    The returned PC platform is synthetic and marked by source='steam'.
+    This is identity-only. It does not fabricate console releases.
     """
     try:
         async with aiohttp.ClientSession(headers={"User-Agent":"KeparGameDetector/1.0"}) as session:
-            async with session.get("https://store.steampowered.com/search/", params={"term":query,"cc":"ca","l":"english"}, timeout=15) as response:
-                if response.status != 200:
-                    return None
-                html=await response.text()
-        soup=BeautifulSoup(html,"html.parser")
-        ranked=[]
-        for row in soup.select("a.search_result_row[data-ds-appid]")[:30]:
-            title_node=row.select_one(".title")
-            appid=row.get("data-ds-appid")
-            if not title_node or not appid or not str(appid).isdigit():
-                continue
-            title=" ".join(title_node.stripped_strings).strip()
-            if not title:
-                continue
-            score=_score(query,title)
-            seq=difflib.SequenceMatcher(None,_norm(query),_norm(title)).ratio()
-            if _norm(query)==_norm(title):
-                score=1.0
-            ranked.append((score,seq,title,int(appid)))
+            ranked = await _steam_search(query, session)
+
         if not ranked:
+            log(f"Steam fallback | no search results | query={query!r}")
             return None
-        score,seq,title,appid=max(ranked,key=lambda x:(x[0],x[1]))
-        # Strong typo tolerance for short/one-token Whisper errors, but do not
-        # accept vaguely similar unrelated titles.
-        if _norm(query)!=_norm(title) and not (score>=0.84 and seq>=0.84):
-            log(f"Steam fallback | rejected low title confidence | query={query!r} | best={title!r} | score={score:.3f} | seq={seq:.3f}")
+
+        score, seq, title, appid, matched_query = ranked[0]
+        normalized_query = _norm(query)
+        normalized_title = _norm(title)
+
+        # Exact normalized title is always safe.
+        # For Whisper typos, require both strong character similarity and a
+        # strong score. This prevents things like Rocket League -> Combat League.
+        accepted = normalized_query == normalized_title or (score >= 0.84 and seq >= 0.84)
+        if not accepted:
+            log(
+                f"Steam fallback | rejected low title confidence | "
+                f"query={query!r} | best={title!r} | score={score:.3f} | "
+                f"seq={seq:.3f} | searched_as={matched_query!r}"
+            )
             return None
-        platform=TGDBPlatform(-appid,"PC",False)
-        result=TGDBGameInfo(-appid,title,platform,tuple(),"pc","steam",f"https://store.steampowered.com/app/{appid}/")
-        log(f"Steam fallback | verified | query={query!r} | title={title!r} | appid={appid} | score={score:.3f}")
+
+        platform = TGDBPlatform(-appid, "PC", False)
+        result = TGDBGameInfo(
+            -appid,
+            title,
+            platform,
+            tuple(),
+            "pc",
+            "steam",
+            f"https://store.steampowered.com/app/{appid}/",
+        )
+        log(
+            f"Steam fallback | verified | query={query!r} | title={title!r} | "
+            f"appid={appid} | score={score:.3f} | seq={seq:.3f} | "
+            f"matched_query={matched_query!r}"
+        )
         return result
     except Exception as exc:
         log(f"Steam fallback error | {query!r} | {type(exc).__name__}: {exc}")
