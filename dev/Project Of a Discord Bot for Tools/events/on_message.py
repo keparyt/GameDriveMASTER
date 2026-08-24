@@ -17,8 +17,11 @@ GAME_QUEUE_CHANNEL_ID = 1541255483917074463
 INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
 QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
 
-TRANSIENT_BOT_MESSAGE_DELETE_DELAY = 1.5
-REQUESTER_PING_DELETE_DELAY = 0.8
+# Discord ephemeral messages can only be created from interactions. The automatic
+# detector is triggered by a normal Message, so its private equivalent is a DM.
+# We DM the requester first, then delete the public input. This guarantees that
+# a failed DM never causes the user's source message to disappear.
+ANALYSIS_PANEL_TIMEOUT = 24 * 60 * 60
 
 
 def normalize_game_name(value: str) -> str:
@@ -53,32 +56,27 @@ def original_input_text(message: discord.Message, parsed: dict | None = None) ->
     return "\n".join(parts).strip() or "[No text — media/attachment input]"
 
 
-async def _delete_later(message: discord.Message, delay: float) -> None:
-    await asyncio.sleep(delay)
+async def _delete_message(message: discord.Message) -> None:
     try:
         await message.delete()
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
 
 
-async def _send_transient(channel, *, content: str | None = None, embed: discord.Embed | None = None, view=None, delay: float = TRANSIENT_BOT_MESSAGE_DELETE_DELAY):
-    sent = await channel.send(content=content, embed=embed, view=view)
-    asyncio.create_task(_delete_later(sent, delay))
-    return sent
-
-
-async def _send_requester_ping(channel, user: discord.abc.User, delay: float = REQUESTER_PING_DELETE_DELAY):
-    ping = await channel.send(content=user.mention, allowed_mentions=discord.AllowedMentions(users=[user]))
-    asyncio.create_task(_delete_later(ping, delay))
-    return ping
-
-
 class GameSelectionView(discord.ui.View):
+    """Private 24-hour selection panel.
+
+    This view is sent in DM because the automatic detector starts from a normal
+    Discord message, for which Discord has no ephemeral-message API.
+    """
+
     def __init__(self, cog, games: list[dict], installed_names: set[str]):
-        super().__init__(timeout=300)
+        super().__init__(timeout=ANALYSIS_PANEL_TIMEOUT)
         self.cog = cog
         self.games = games
         self.installed_names = installed_names
+        self.resolved_indices: set[int] = set()
+
         options = []
         for index, game in enumerate(games[:25]):
             name = str(game.get("name", "Unknown game"))[:100]
@@ -86,17 +84,51 @@ class GameSelectionView(discord.ui.View):
             platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
             description = "Already installed" if installed else f"{platform} • {len(consoles.split(', ')) if consoles else 0} console(s)"
-            options.append(discord.SelectOption(label=name, value=str(index), description=description[:100], emoji="✅" if installed else "🎮"))
-        self.select = discord.ui.Select(placeholder="Choose the game(s) to add to the download queue...", min_values=0, max_values=max(1, len(options)), options=options)
+            options.append(
+                discord.SelectOption(
+                    label=name,
+                    value=str(index),
+                    description=description[:100],
+                    emoji="✅" if installed else "🎮",
+                )
+            )
+            if installed:
+                self.resolved_indices.add(index)
+
+        if not options:
+            return
+
+        self.select = discord.ui.Select(
+            placeholder="Choose the game(s) to add to the download queue...",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
         self.select.callback = self.select_games
         self.add_item(self.select)
 
     async def select_games(self, interaction: discord.Interaction):
-        selected = [self.games[int(value)] for value in self.select.values]
-        already_installed = [g for g in selected if normalize_game_name(str(g.get("name", ""))) in self.installed_names]
-        to_queue = [g for g in selected if g not in already_installed]
-        added, blocked = await add_games(to_queue, requester_id=interaction.user.id, requester_name=interaction.user.display_name)
+        selected_indices = {int(value) for value in self.select.values}
+        selected = [self.games[index] for index in selected_indices]
+
+        already_installed = [
+            game
+            for game in selected
+            if normalize_game_name(str(game.get("name", ""))) in self.installed_names
+        ]
+        to_queue = [game for game in selected if game not in already_installed]
+
+        added, blocked = await add_games(
+            to_queue,
+            requester_id=interaction.user.id,
+            requester_name=interaction.user.display_name,
+        )
         await self.cog.refresh_queue_panel()
+
+        # Every selected item is now resolved: queued, already installed, or
+        # explicitly rejected as blacklisted.
+        self.resolved_indices.update(selected_indices)
+
         parts = []
         if added:
             parts.append("Added to queue: " + ", ".join(str(g.get("name", "Unknown game")) for g in added))
@@ -111,7 +143,28 @@ class GameSelectionView(discord.ui.View):
             parts.append("Already installed: " + ", ".join(str(g.get("name")) for g in already_installed))
         if not parts:
             parts.append("Nothing new was added; those games are already in the queue.")
+
+        all_resolved = len(self.resolved_indices) >= min(len(self.games), 25)
+        if all_resolved:
+            parts.append("\n✅ All detected games have been resolved. This private panel will now close.")
+
         await interaction.response.send_message("\n".join(parts), ephemeral=True)
+
+        if all_resolved:
+            self.stop()
+            await _delete_message(interaction.message)
+
+    async def on_timeout(self):
+        # Keep the DM private but remove interactive controls after 24 hours.
+        self.stop()
+        message = getattr(self, "message", None)
+        if message:
+            try:
+                for item in self.children:
+                    item.disabled = True
+                await message.edit(view=self)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
 
 
 class OnMessage(commands.Cog):
@@ -209,8 +262,20 @@ class OnMessage(commands.Cog):
         await set_panel_message_id(panel.id)
         return panel
 
+    async def _open_private_analysis(self, user: discord.abc.User, embed: discord.Embed, view=None):
+        """Create the private analysis panel before deleting the public input."""
+        try:
+            dm = await user.create_dm()
+            message = await dm.send(embed=embed, view=view)
+            if view is not None:
+                view.message = message
+            return message
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log(f"Game detector private message failed | {type(exc).__name__}: {exc}")
+            return None
+
     async def handle_game_detection(self, message: discord.Message):
-        status_message = None
+        private_message = None
         parsed = None
         captured_input = original_input_text(message)
         try:
@@ -218,44 +283,61 @@ class OnMessage(commands.Cog):
             if parsed is None:
                 return
             captured_input = original_input_text(message, parsed)
-            try:
-                await message.delete()
-                log(f"Game detector | deleted user input | message={message.id}")
-            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
-                log(f"Game detector | input delete failed | message={message.id} | {type(exc).__name__}: {exc}")
+
+            # IMPORTANT: create the private response first. If DMs are disabled,
+            # leave the original message intact instead of deleting the user's input.
+            status_embed = discord.Embed(
+                title="🎮 Analyzing Games...",
+                description=(
+                    "Inspecting every media item, sampling the full video duration for OCR, "
+                    "transcribing audio, cross-checking sources, and using descriptions only as a last resort."
+                ),
+            )
+            status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
+            status_embed.set_footer(text="Private analysis • selection panel remains available for 24 hours")
+
+            private_message = await self._open_private_analysis(message.author, status_embed)
+            if private_message is None:
+                log(f"Game detector | kept user input because private response could not be created | message={message.id}")
+                return
+
+            # Only now is it safe to remove the public source message.
+            await _delete_message(message)
+            log(f"Game detector | private response created then deleted user input | message={message.id}")
 
             if parsed.get("status") == "unsupported_url":
                 urls = "\n".join(f"• {url}" for url in parsed.get("unsupported_urls", []))
-                embed = discord.Embed(title="🔗 Game URL Required", description=f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n**Unrecognized URL(s):**\n{urls}\n\n**Original input:**\n```{captured_input[:900]}```")
-                await _send_transient(message.channel, embed=embed)
-                await _send_requester_ping(message.channel, message.author)
+                embed = discord.Embed(
+                    title="🔗 Game URL Required",
+                    description=(
+                        f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n"
+                        f"**Unrecognized URL(s):**\n{urls}\n\n"
+                        f"**Original input:**\n```{captured_input[:900]}```"
+                    ),
+                )
+                await private_message.edit(embed=embed)
                 return
 
-            status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Inspecting every media item, sampling the full video duration for OCR, transcribing audio, cross-checking sources, and using descriptions only as a last resort.")
-            status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-            status_message = await _send_transient(message.channel, embed=status_embed, delay=300)
             result = await analyze_game_input(parsed)
             installed = await self.installed_game_names()
             games = result.get("games") or []
             view = GameSelectionView(self, games, installed) if games else None
             result_embed = self.create_result_embed(result, installed, captured_input)
-            try:
-                await status_message.edit(embed=result_embed, view=view)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                status_message = await _send_transient(message.channel, embed=result_embed, view=view, delay=300)
-            await _send_requester_ping(message.channel, message.author)
+            if view is not None:
+                view.message = private_message
+            await private_message.edit(embed=result_embed, view=view)
+
         except Exception as error:
             log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
-            embed = discord.Embed(title="❌ Game Detection Failed", description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```")
-            if status_message:
+            embed = discord.Embed(
+                title="❌ Game Detection Failed",
+                description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```",
+            )
+            if private_message:
                 try:
-                    await status_message.edit(embed=embed)
-                    asyncio.create_task(_delete_later(status_message, TRANSIENT_BOT_MESSAGE_DELETE_DELAY))
+                    await private_message.edit(embed=embed, view=None)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    await _send_transient(message.channel, embed=embed)
-            else:
-                await _send_transient(message.channel, embed=embed)
-            await _send_requester_ping(message.channel, message.author)
+                    pass
 
     @classmethod
     def create_result_embed(cls, result: dict, installed_names: set[str], captured_input: str | None = None) -> discord.Embed:
@@ -267,6 +349,7 @@ class OnMessage(commands.Cog):
             if captured_input:
                 embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
             return embed
+
         title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
         description = f"Found **{len(games)}** verified game(s). Select which game(s) should be sent to the massive library download queue."
         if unresolved:
@@ -275,6 +358,7 @@ class OnMessage(commands.Cog):
         embed = discord.Embed(title=title, description=description[:4096])
         if captured_input:
             embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
+
         lines = []
         for index, game in enumerate(games, start=1):
             name = str(game.get("name", "Unknown game"))
@@ -286,8 +370,10 @@ class OnMessage(commands.Cog):
             platform = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
             evidence_type = str(game.get("evidence_type") or "unknown")
             lines.append(f"**{index}. {shown}** — {state} · `{evidence_type}` · {platform}")
+
         for start in range(0, len(lines), 15):
             embed.add_field(name="Detected games" if start == 0 else "More games", value="\n".join(lines[start:start + 15])[:1024], inline=False)
+
         evidence = []
         for index, game in enumerate(games, start=1):
             reason = str(game.get("reason") or "").strip()
@@ -295,12 +381,15 @@ class OnMessage(commands.Cog):
                 evidence.append(f"**{index}.** {reason}")
         if evidence:
             embed.add_field(name="Evidence", value="\n".join(evidence)[:1024], inline=False)
+
         if unresolved:
             unresolved_lines = []
             for item in unresolved:
                 name = str(item.get("name", "Unknown game"))
                 unresolved_lines.append(f"• **{name}** — send its direct Steam/KeparDB store page URL + proper name")
             embed.add_field(name="Need a direct game link", value="\n".join(unresolved_lines)[:1024], inline=False)
+
+        embed.set_footer(text="Private analysis panel • expires after 24 hours or when all detected games are resolved")
         return embed
 
 
