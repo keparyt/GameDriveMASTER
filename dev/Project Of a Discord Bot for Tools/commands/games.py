@@ -5,6 +5,11 @@ from discord.ext import commands
 from processors.game_queue import blacklist_game, remove_queue_item
 from processors.game_media_analyzer import analyze_game_input
 from processors.input_parser import process_game_message
+from utils.game_selection_close import install_game_selection_close_button
+
+# Install the small Close control on the shared private game-selection view.
+# The view itself lives in events.on_message and is also used by /games analyze.
+install_game_selection_close_button()
 
 
 class Games(commands.GroupCog, group_name="games"):
@@ -31,9 +36,6 @@ class Games(commands.GroupCog, group_name="games"):
         attachment: discord.Attachment | None = None,
     ):
         """Run game identification entirely as a genuine ephemeral interaction."""
-        # Interaction responses are the only Discord messages that support
-        # ephemeral=True. Defer immediately so long OCR/video analysis does not
-        # exceed Discord's initial interaction response deadline.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         cog = self.bot.get_cog("OnMessage")
@@ -111,8 +113,6 @@ class Games(commands.GroupCog, group_name="games"):
             installed = await cog.installed_game_names()
             games = result.get("games") or []
 
-            # Import the selection view from the message detector. The view's
-            # callbacks are interactions, so their responses are also ephemeral.
             from events.on_message import GameSelectionView
 
             view = GameSelectionView(cog, games, installed) if games else None
@@ -122,8 +122,6 @@ class Games(commands.GroupCog, group_name="games"):
                 input_text or (attachment.filename if attachment else None),
             )
 
-            # edit_original_response() edits the deferred ephemeral response;
-            # therefore the progress and final result never become public.
             await interaction.edit_original_response(
                 embed=result_embed,
                 view=view,
