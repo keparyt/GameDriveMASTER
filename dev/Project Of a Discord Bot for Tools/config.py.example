@@ -17,3 +17,7 @@ HOME_ROLE_ID = 0
 
 # Seconds before a connection is considered dead.
 LAN_CONNECTION_TIMEOUT = 600
+
+# Local KeparGameDB snapshot links are resolved against this prefix.
+# Example: href="games/my-game" -> https://kepardb.com/games/my-game
+KEPAR_DB_URL_PREFIX = "https://kepardb.com"
