@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import os
 import re
@@ -52,7 +53,6 @@ def _dedupe_candidates(candidates: list[dict]) -> list[dict]:
 
 
 def _similarity(a: str, b: str) -> float:
-    import difflib
     return difflib.SequenceMatcher(None, normalize_name(a), normalize_name(b)).ratio()
 
 
@@ -65,7 +65,6 @@ def _token_similarity(a: str, b: str) -> float:
 
 
 def _word_similarity(a: str, b: str) -> float:
-    import difflib
     aw = normalize_name(a).split()
     bw = normalize_name(b).split()
     if not aw or not bw or abs(len(aw) - len(bw)) > 1:
@@ -88,6 +87,20 @@ def _word_similarity(a: str, b: str) -> float:
     return sum(scores) / len(scores) if scores else 0.0
 
 
+def _correction_confidence(original: str, corrected: str) -> float:
+    """Similarity of the user's text to DeepSeek's correction, not verification certainty."""
+    original_norm = normalize_name(original)
+    corrected_norm = normalize_name(corrected)
+    if not original_norm or not corrected_norm:
+        return 0.0
+    if original_norm == corrected_norm:
+        return 100.0
+    sequence = _similarity(original, corrected)
+    word = _word_similarity(original, corrected)
+    score = (sequence * 0.60 + word * 0.40) * 100.0
+    return round(max(0.0, min(99.0, score)), 1)
+
+
 def _credible_name_match(query: str, title: str, threshold: float) -> bool:
     q = normalize_name(query)
     t = normalize_name(title)
@@ -107,28 +120,19 @@ def _credible_name_match(query: str, title: str, threshold: float) -> bool:
 
 
 async def _deepseek_correct_name(name: str) -> str:
-    """Ask DeepSeek for a spelling/title correction, but never trust it as verification."""
     prompt = f"""Correct this possible misspelled video game name.
 
 INPUT: {name}
 
 Rules:
 - Return the most likely REAL video game title.
-- Fix spelling mistakes such as 'neigbour' -> 'neighbor'.
+- Fix spelling mistakes and obvious phonetic/typing errors.
 - Do not invent a sequel, remake, edition, or different game.
 - If the input is already correct, return it unchanged.
 - If you are unsure, return the input unchanged.
 - Output ONLY the corrected game name, with no explanation.
 """
-    payload = {
-        "model": OLLAMA_MODEL,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": "You correct misspelled video game names. Never invent titles."},
-            {"role": "user", "content": prompt},
-        ],
-        "options": {"temperature": 0},
-    }
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You correct misspelled video game names. Never invent titles."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
@@ -139,7 +143,6 @@ Rules:
         corrected = corrected.splitlines()[-1].strip(" \"'`*•") if corrected else ""
         if not corrected or len(corrected) > 150:
             return name
-        # R1 can occasionally add an explanation despite the prompt. Don't use it.
         if any(marker in corrected.casefold() for marker in ("because", "the correct", "i think", "i would", "likely ")):
             return name
         return corrected
@@ -158,8 +161,6 @@ async def analyze_game_input(data: dict) -> dict:
             candidates = await _extract_direct_text(text)
             if not candidates:
                 return {"status": "unknown", "message": "No explicit game names could be extracted from the text."}
-            # DeepSeek proposes a spelling correction first; Steam/KeparDB still
-            # perform the actual verification so DeepSeek cannot invent a game.
             corrected_candidates = []
             for candidate in candidates[:MAX_GAMES]:
                 original = candidate["name"]
@@ -167,15 +168,13 @@ async def analyze_game_input(data: dict) -> dict:
                 item = dict(candidate)
                 item["detected_name"] = original
                 item["name"] = corrected
-                item["correction"] = corrected if normalize_name(original) != normalize_name(corrected) else None
-                if item["correction"]:
+                changed = normalize_name(original) != normalize_name(corrected)
+                item["correction"] = corrected if changed else None
+                item["ai_correction_confidence"] = _correction_confidence(original, corrected) if changed else 100.0
+                if changed:
                     item["reason"] = f"DeepSeek spelling correction: {original} → {corrected}"
                 corrected_candidates.append(item)
             games, unresolved = await _verify_and_enrich(corrected_candidates)
-            # Keep the original user input visible when a correction was applied.
-            for game in games:
-                if game.get("detected_name") and normalize_name(game["detected_name"]) != normalize_name(game["name"]):
-                    game["correction"] = game["name"]
             return _result(games, unresolved)
         text_parts = []
         if text:
@@ -231,7 +230,7 @@ def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     if unresolved:
         names = ", ".join(item["name"] for item in unresolved)
         message = f"{len(games)} game(s) verified. Could not verify: {names}. Please provide direct Steam or KeparDB store page links."
-    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": message}
+    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("ai_correction_confidence", first.get("confidence", 0))), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": message}
 
 
 async def _extract_direct_text(text: str) -> list[dict]:
@@ -291,6 +290,8 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
             item["library_url"] = item["steam_url"]
             item["library_source"] = "steam"
             item["correction"] = steam_match["name"] if normalize_name(item["detected_name"]) != normalize_name(steam_match["name"]) else None
+            if item.get("correction"):
+                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], steam_match["name"])
             verified.append(item)
             continue
         db_match = await find_game(original_name)
@@ -305,9 +306,11 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
             item["verified"] = True
             item["verification_source"] = "kepardb"
             item["correction"] = db_match.name if normalize_name(item["detected_name"]) != normalize_name(db_match.name) else None
+            if item.get("correction"):
+                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], db_match.name)
             verified.append(item)
             continue
-        unresolved.append({"name": candidate.get("detected_name", original_name), "detected_name": candidate.get("detected_name", original_name), "confidence": float(candidate.get("confidence", 0)), "reason": "No sufficiently reliable Steam or KeparDB match.", "requires_store_link": True})
+        unresolved.append({"name": candidate.get("detected_name", original_name), "detected_name": candidate.get("detected_name", original_name), "confidence": float(candidate.get("ai_correction_confidence", candidate.get("confidence", 0))), "reason": "No sufficiently reliable Steam or KeparDB match.", "requires_store_link": True})
     return verified[:MAX_GAMES], unresolved
 
 
