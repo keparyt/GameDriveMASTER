@@ -4,23 +4,17 @@ import re
 import discord
 from discord.ext import commands
 
-# Evidence-first analyzer: actual media/OCR is authoritative; social descriptions
-# are deliberately treated as last-resort context.
 from processors.game_media_analyzer import analyze_game_input
 from processors.game_queue import add_games, list_queue
 from processors.game_queue_panel import get_panel_message_id, set_panel_message_id
 from processors.input_parser import process_game_message
+from utils.embed_style import DANGER, INFO, PRIMARY, SUCCESS, WARNING, error, panel, status, warning
 from utils.helper import log
 
 GAME_DETECTOR_CHANNEL_ID = 1541167588476981339
 GAME_QUEUE_CHANNEL_ID = 1541255483917074463
 INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
 QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
-
-# Discord ephemeral messages can only be created from interactions. The automatic
-# detector is triggered by a normal Message, so its private equivalent is a DM.
-# We DM the requester first, then delete the public input. This guarantees that
-# a failed DM never causes the user's source message to disappear.
 ANALYSIS_PANEL_TIMEOUT = 24 * 60 * 60
 
 
@@ -45,9 +39,7 @@ def original_input_text(message: discord.Message, parsed: dict | None = None) ->
         urls.extend(str(x) for x in parsed.get("unsupported_urls") or [])
     if not urls:
         urls = re.findall(r"https?://[^\s<>]+", content, flags=re.I)
-    parts = []
-    if content:
-        parts.append(content)
+    parts = [content] if content else []
     for attachment in message.attachments:
         parts.append(f"[attachment] {attachment.filename} — {attachment.url}")
     for url in urls:
@@ -64,11 +56,7 @@ async def _delete_message(message: discord.Message) -> None:
 
 
 class GameSelectionView(discord.ui.View):
-    """Private 24-hour selection panel.
-
-    This view is sent in DM because the automatic detector starts from a normal
-    Discord message, for which Discord has no ephemeral-message API.
-    """
+    """Private 24-hour game selection UI."""
 
     def __init__(self, cog, games: list[dict], installed_names: set[str]):
         super().__init__(timeout=ANALYSIS_PANEL_TIMEOUT)
@@ -99,7 +87,7 @@ class GameSelectionView(discord.ui.View):
             return
 
         self.select = discord.ui.Select(
-            placeholder="Choose the game(s) to add to the download queue...",
+            placeholder="Select game(s) to add to the massive library…",
             min_values=1,
             max_values=len(options),
             options=options,
@@ -110,13 +98,8 @@ class GameSelectionView(discord.ui.View):
     async def select_games(self, interaction: discord.Interaction):
         selected_indices = {int(value) for value in self.select.values}
         selected = [self.games[index] for index in selected_indices]
-
-        already_installed = [
-            game
-            for game in selected
-            if normalize_game_name(str(game.get("name", ""))) in self.installed_names
-        ]
-        to_queue = [game for game in selected if game not in already_installed]
+        already_installed = [g for g in selected if normalize_game_name(str(g.get("name", ""))) in self.installed_names]
+        to_queue = [g for g in selected if g not in already_installed]
 
         added, blocked = await add_games(
             to_queue,
@@ -124,38 +107,38 @@ class GameSelectionView(discord.ui.View):
             requester_name=interaction.user.display_name,
         )
         await self.cog.refresh_queue_panel()
-
-        # Every selected item is now resolved: queued, already installed, or
-        # explicitly rejected as blacklisted.
         self.resolved_indices.update(selected_indices)
 
-        parts = []
+        lines = []
         if added:
-            parts.append("Added to queue: " + ", ".join(str(g.get("name", "Unknown game")) for g in added))
+            lines.append("### Added to download queue\n" + "\n".join(f"• **{g.get('name', 'Unknown game')}**" for g in added))
         if blocked:
-            blocked_lines = []
-            for game in blocked:
-                name = str(game.get("attempted_name") or game.get("name") or "Unknown game")
-                reason = str(game.get("reason") or "This game is blacklisted.").strip()
-                blocked_lines.append(f"{name} — {reason}")
-            parts.append("🚫 Blacklisted:\n" + "\n".join(blocked_lines))
+            lines.append("### 🚫 Not added\n" + "\n".join(
+                f"• **{g.get('attempted_name') or g.get('name') or 'Unknown game'}** — {g.get('reason') or 'This game is blacklisted.'}"
+                for g in blocked
+            ))
         if already_installed:
-            parts.append("Already installed: " + ", ".join(str(g.get("name")) for g in already_installed))
-        if not parts:
-            parts.append("Nothing new was added; those games are already in the queue.")
+            lines.append("### Already installed\n" + "\n".join(f"• **{g.get('name', 'Unknown game')}**" for g in already_installed))
+        if not lines:
+            lines.append("No changes were required; the selected games are already handled.")
 
         all_resolved = len(self.resolved_indices) >= min(len(self.games), 25)
         if all_resolved:
-            parts.append("\n✅ All detected games have been resolved. This private panel will now close.")
+            lines.append("\n**✓ All detected games are resolved.** This private panel will now close.")
 
-        await interaction.response.send_message("\n".join(parts), ephemeral=True)
+        result = panel(
+            "Selection updated",
+            "\n\n".join(lines),
+            color=SUCCESS if added else WARNING,
+            footer="Private game selection",
+        )
+        await interaction.response.send_message(embed=result, ephemeral=True)
 
         if all_resolved:
             self.stop()
             await _delete_message(interaction.message)
 
     async def on_timeout(self):
-        # Keep the DM private but remove interactive controls after 24 hours.
         self.stop()
         message = getattr(self, "message", None)
         if message:
@@ -224,9 +207,7 @@ class OnMessage(commands.Cog):
     @staticmethod
     def requester_text(game: dict) -> str:
         requester_id = game.get("requester_id")
-        if requester_id:
-            return f"<@{requester_id}>"
-        return str(game.get("requester_name") or "Unknown")[:40]
+        return f"<@{requester_id}>" if requester_id else str(game.get("requester_name") or "Unknown")[:40]
 
     async def refresh_queue_panel(self):
         channel = self.bot.get_channel(GAME_QUEUE_CHANNEL_ID)
@@ -235,6 +216,7 @@ class OnMessage(commands.Cog):
         queue = await list_queue()
         installed = await self.installed_game_names()
         pending = [g for g in queue if normalize_game_name(str(g.get("name", ""))) not in installed]
+
         lines = []
         for index, game in enumerate(pending, start=1):
             queue_id = game.get("id", index)
@@ -245,25 +227,38 @@ class OnMessage(commands.Cog):
             requester = self.requester_text(game)
             selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
-            platform_suffix = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
-            lines.append(f"**#{queue_id} — {shown}** · `{source}` · {platform_suffix} · requested by {requester}")
-        description = "Games selected by users that still need to be downloaded.\n\n" + ("\n".join(lines[:50]) if lines else "No games are currently waiting.")
-        embed = discord.Embed(title=QUEUE_PANEL_TITLE, description=description[:4096])
-        embed.set_footer(text=f"{len(pending)} game(s) waiting • PC is prioritized when available • Console is additionally supported when PC is unavailable")
-        panel = await self._find_existing_panel(channel)
-        if panel:
+            if game.get("pc_available") and consoles:
+                platform_suffix = f"`PC` → `{consoles}`"
+            elif consoles:
+                platform_suffix = f"`{selected_platform}` → `{consoles}`"
+            else:
+                platform_suffix = f"`{selected_platform}`"
+            lines.append(f"**#{queue_id} · {shown}**\n`{source}`  ·  {platform_suffix}  ·  requested by {requester}")
+
+        embed = panel(
+            QUEUE_PANEL_TITLE,
+            "A clean, persistent list of games selected for the massive library.\n\n" + ("\n\n".join(lines[:40]) if lines else "**Queue is clear.**\nNo games are currently waiting."),
+            color=PRIMARY,
+            footer=f"{len(pending)} waiting • PC prioritized when available • Console supported when PC is unavailable",
+        )
+        embed.add_field(name="Queue status", value=f"**{len(pending)}** game(s) waiting", inline=True)
+        embed.add_field(name="Priority", value="PC first", inline=True)
+        embed.add_field(name="Console", value="Additional support", inline=True)
+
+        panel_message = await self._find_existing_panel(channel)
+        if panel_message:
             try:
-                await panel.edit(embed=embed)
-                await set_panel_message_id(panel.id)
-                return panel
+                await panel_message.edit(embed=embed)
+                await set_panel_message_id(panel_message.id)
+                return panel_message
             except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
                 log(f"Queue panel edit error | {type(exc).__name__}: {exc}")
-        panel = await channel.send(embed=embed)
-        await set_panel_message_id(panel.id)
-        return panel
+
+        panel_message = await channel.send(embed=embed)
+        await set_panel_message_id(panel_message.id)
+        return panel_message
 
     async def _open_private_analysis(self, user: discord.abc.User, embed: discord.Embed, view=None):
-        """Create the private analysis panel before deleting the public input."""
         try:
             dm = await user.create_dm()
             message = await dm.send(embed=embed, view=view)
@@ -284,37 +279,30 @@ class OnMessage(commands.Cog):
                 return
             captured_input = original_input_text(message, parsed)
 
-            # IMPORTANT: create the private response first. If DMs are disabled,
-            # leave the original message intact instead of deleting the user's input.
-            status_embed = discord.Embed(
-                title="🎮 Analyzing Games...",
-                description=(
-                    "Inspecting every media item, sampling the full video duration for OCR, "
-                    "transcribing audio, cross-checking sources, and using descriptions only as a last resort."
-                ),
+            status_embed = status(
+                "🎮 Analyzing game media",
+                "Inspecting every media item, sampling video for OCR, cross-checking visual evidence, and using descriptions only as a last resort.",
+                footer="Private analysis • results stay out of the channel",
             )
             status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-            status_embed.set_footer(text="Private analysis • selection panel remains available for 24 hours")
+            status_embed.add_field(name="Analysis", value="Media → OCR → visual evidence → source verification", inline=False)
 
             private_message = await self._open_private_analysis(message.author, status_embed)
             if private_message is None:
                 log(f"Game detector | kept user input because private response could not be created | message={message.id}")
                 return
 
-            # Only now is it safe to remove the public source message.
             await _delete_message(message)
             log(f"Game detector | private response created then deleted user input | message={message.id}")
 
             if parsed.get("status") == "unsupported_url":
-                urls = "\n".join(f"• {url}" for url in parsed.get("unsupported_urls", []))
-                embed = discord.Embed(
-                    title="🔗 Game URL Required",
-                    description=(
-                        f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n"
-                        f"**Unrecognized URL(s):**\n{urls}\n\n"
-                        f"**Original input:**\n```{captured_input[:900]}```"
-                    ),
+                urls = "\n".join(f"• {url}" for url in parsed.get("unsupported_urls", [])) or "• None"
+                embed = warning(
+                    "🔗 Game URL required",
+                    f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n**Unrecognized URL(s)**\n{urls}",
+                    footer="Private analysis • provide a direct Steam/KeparDB game link when possible",
                 )
+                embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
                 await private_message.edit(embed=embed)
                 return
 
@@ -327,12 +315,14 @@ class OnMessage(commands.Cog):
                 view.message = private_message
             await private_message.edit(embed=result_embed, view=view)
 
-        except Exception as error:
-            log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
-            embed = discord.Embed(
-                title="❌ Game Detection Failed",
-                description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```",
+        except Exception as exc:
+            log(f"Game detection error | message={message.id} | {type(exc).__name__}: {exc}")
+            embed = error(
+                "❌ Game detection failed",
+                "Something went wrong while analyzing that content. Please try again with the original source.",
+                footer="Private analysis • no public message was created",
             )
+            embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
             if private_message:
                 try:
                     await private_message.edit(embed=embed, view=None)
@@ -343,36 +333,42 @@ class OnMessage(commands.Cog):
     def create_result_embed(cls, result: dict, installed_names: set[str], captured_input: str | None = None) -> discord.Embed:
         games = result.get("games") or []
         unresolved = result.get("unresolved_games") or []
-        status = result.get("status")
-        if not games and status not in {"partial", "identified"}:
-            embed = discord.Embed(title="🎮 Game Not Identified", description=result.get("message", "I couldn't identify the game."))
+        status_value = result.get("status")
+
+        if not games and status_value not in {"partial", "identified"}:
+            embed = warning("🎮 Game not identified", result.get("message", "I couldn't identify a supported game."), footer="Game analysis • no sufficiently strong match")
             if captured_input:
                 embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
+            embed.add_field(name="Accuracy note", value="The detector is not 100% perfect. Results depend on the quality and clarity of the supplied media.", inline=False)
             return embed
 
-        title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
-        description = f"Found **{len(games)}** verified game(s). Select which game(s) should be sent to the massive library download queue."
-        if unresolved:
-            unresolved_names = ", ".join(str(item.get("name", "Unknown game")) for item in unresolved)
-            description += f"\n\n⚠️ **Not verified and excluded:** {unresolved_names}"
-        embed = discord.Embed(title=title, description=description[:4096])
+        title = "🎮 Games identified" if not unresolved else "🎮 Games identified · Some unresolved"
+        description = f"Found **{len(games)}** verified game(s). Review the matches below, then select the game(s) you want in the massive library queue."
+        embed = panel(title, description, color=SUCCESS if games else WARNING, footer="Private analysis • selection panel expires after 24h or when resolved")
+
         if captured_input:
             embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
+
+        embed.add_field(
+            name="Accuracy note",
+            value="⚠️ **This bot is not 100% perfect.** Always review the detected titles before adding them to the queue. Media/OCR evidence is prioritized; descriptions are only supporting context.",
+            inline=False,
+        )
 
         lines = []
         for index, game in enumerate(games, start=1):
             name = str(game.get("name", "Unknown game"))
             url = game.get("steam_url") or game.get("kepargamedb_url") or game.get("library_url") or game.get("tgdb_url")
             shown = f"[{name}]({url})" if url else name
-            state = "**Already installed**" if normalize_game_name(name) in installed_names else f"{float(game.get('confidence', 0)):.0f}%"
+            state = "Already installed" if normalize_game_name(name) in installed_names else f"{float(game.get('confidence', 0)):.0f}% confidence"
             selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
             platform = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
             evidence_type = str(game.get("evidence_type") or "unknown")
-            lines.append(f"**{index}. {shown}** — {state} · `{evidence_type}` · {platform}")
+            lines.append(f"**{index}. {shown}**\n`{state}`  ·  `{evidence_type}`  ·  {platform}")
 
-        for start in range(0, len(lines), 15):
-            embed.add_field(name="Detected games" if start == 0 else "More games", value="\n".join(lines[start:start + 15])[:1024], inline=False)
+        for start in range(0, len(lines), 10):
+            embed.add_field(name="Detected games" if start == 0 else "More detected games", value="\n\n".join(lines[start:start + 10])[:1024], inline=False)
 
         evidence = []
         for index, game in enumerate(games, start=1):
@@ -380,16 +376,16 @@ class OnMessage(commands.Cog):
             if reason:
                 evidence.append(f"**{index}.** {reason}")
         if evidence:
-            embed.add_field(name="Evidence", value="\n".join(evidence)[:1024], inline=False)
+            embed.add_field(name="Why these matches", value="\n".join(evidence)[:1024], inline=False)
 
         if unresolved:
             unresolved_lines = []
             for item in unresolved:
                 name = str(item.get("name", "Unknown game"))
                 unresolved_lines.append(f"• **{name}** — send its direct Steam/KeparDB store page URL + proper name")
-            embed.add_field(name="Need a direct game link", value="\n".join(unresolved_lines)[:1024], inline=False)
+            embed.add_field(name="Unresolved matches", value="\n".join(unresolved_lines)[:1024], inline=False)
 
-        embed.set_footer(text="Private analysis panel • expires after 24 hours or when all detected games are resolved")
+        embed.add_field(name="Next step", value="Use the selector below to add one or more verified games to the massive library queue. You can close this private panel at any time.", inline=False)
         return embed
 
 
