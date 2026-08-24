@@ -12,9 +12,9 @@ import aiohttp
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-# DeepSeek-R1 7B is the default local reasoning model for game identification.
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 MAX_TRANSCRIPT_CHARS = 12000
+MAX_GAMES = 10
 
 
 def _run(command: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
@@ -26,11 +26,7 @@ def _tool(name: str) -> str | None:
 
 
 async def analyze_game_input(data: dict) -> dict:
-    """Turn normalized Discord input into a game name.
-
-    Public URL handling uses yt-dlp. Private/authenticated content is not
-    bypassed. Direct text and Discord attachments are also supported.
-    """
+    """Turn normalized Discord input into one or more identified games."""
     workdir = Path(tempfile.mkdtemp(prefix="game-detector-"))
     try:
         text_parts = []
@@ -77,21 +73,26 @@ async def analyze_game_input(data: dict) -> dict:
         ai = await _ask_ollama(evidence)
         candidates = ai.get("candidates", []) if isinstance(ai, dict) else []
         candidates = [c for c in candidates if isinstance(c, dict) and c.get("name")]
+        candidates = candidates[:MAX_GAMES]
 
         if not candidates:
             return {"status": "unknown", "message": "I couldn't identify a game from the available evidence."}
 
         verified = await _verify_steam(candidates)
-        best = verified[0] if verified else candidates[0]
+        games = verified[:MAX_GAMES] or candidates[:MAX_GAMES]
 
-        confidence = float(best.get("confidence", 0))
+        # A post can legitimately contain multiple games. Do not collapse the
+        # result to a single "best" game.
         return {
             "status": "identified",
-            "game_name": best.get("name"),
-            "confidence": confidence,
-            "steam_url": best.get("steam_url"),
-            "reason": best.get("reason", "AI identification from the supplied content."),
-            "candidates": verified[:5] or candidates[:5],
+            "game_count": len(games),
+            "games": games,
+            # Keep the first game for compatibility with older callers.
+            "game_name": games[0].get("name"),
+            "confidence": float(games[0].get("confidence", 0)),
+            "steam_url": games[0].get("steam_url"),
+            "reason": games[0].get("reason", "AI identification from the supplied content."),
+            "candidates": games,
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -187,10 +188,16 @@ async def _ocr_image(image: Path) -> str:
 
 
 async def _ask_ollama(evidence: str) -> dict:
-    prompt = f"""Identify the video game in this content. Do not invent a title.
+    prompt = f"""Identify ALL video games mentioned, shown, or strongly implied by this content.
+There may be multiple distinct games. Do NOT stop after finding the first one.
+Do not invent titles. Only return a game when there is meaningful evidence.
+If one game is mentioned repeatedly, return it only once.
+
 Return ONLY valid JSON in this exact shape:
-{{"candidates":[{{"name":"Game title","confidence":0-100,"reason":"short evidence"}}]}}
-Use the title/description/transcript/OCR as evidence. If uncertain, return several candidates.
+{{"candidates":[{{"name":"Game title","confidence":0-100,"reason":"short evidence","evidence_type":"audio|caption|ocr|visual|other"}}]}}
+
+Order candidates from strongest to weakest evidence. Include up to {MAX_GAMES} distinct games.
+Use the title/description/transcript/OCR as evidence.
 
 CONTENT:
 {evidence[:24000]}"""
@@ -199,7 +206,7 @@ CONTENT:
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": "You are a strict video-game identification assistant. Return only the requested JSON and do not invent games."},
+            {"role": "system", "content": "You are a strict video-game identification assistant. A single piece of content can contain multiple different games. Return only the requested JSON and do not invent games."},
             {"role": "user", "content": prompt},
         ],
         "options": {"temperature": 0.1},
@@ -237,11 +244,16 @@ async def _verify_steam(candidates: list[dict]) -> list[dict]:
                     candidate["steam_appid"] = int(match.group(1))
                     candidate["steam_url"] = f"https://store.steampowered.com/app/{match.group(1)}/"
                     candidate["confidence"] = min(100, float(candidate.get("confidence", 0)) + 10)
+                    candidate["steam_verified"] = True
                     results.append(candidate)
                 else:
+                    candidate = dict(candidate)
+                    candidate["steam_verified"] = False
                     results.append(candidate)
             except Exception as exc:
                 log(f"Steam verification error | {name} | {type(exc).__name__}: {exc}")
+                candidate = dict(candidate)
+                candidate["steam_verified"] = False
                 results.append(candidate)
 
     return sorted(results, key=lambda x: float(x.get("confidence", 0)), reverse=True)
