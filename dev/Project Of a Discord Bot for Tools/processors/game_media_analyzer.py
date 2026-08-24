@@ -20,9 +20,10 @@ import aiohttp
 from processors.game_analyzer import (
     MAX_GAMES, MAX_SOCIAL_MEDIA_ITEMS, MAX_TRANSCRIPT_CHARS,
     _clean_candidate_name, _dedupe_candidates, _deepseek_correct_name,
-    _download_attachment, _download_url, _extract_direct_text, _ocr_image,
+    _download_attachment, _download_url, _extract_direct_text,
     _result, _transcribe, _verify_and_enrich, _tool, _run,
 )
+from processors.robust_ocr import ocr_image as _ocr_image
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
@@ -122,14 +123,16 @@ STRICT RULES:
 5. Do not blindly trust AI-generated social-media descriptions.
 6. Do not invent sequels, remakes, editions, or related games.
 7. If evidence conflicts, prefer the strongest actual-media evidence.
-8. Return every distinct game supported by the media. Maximum {MAX_GAMES}.
+8. OCR can contain character-level mistakes. Treat near-matches as OCR hypotheses, not literal titles.
+9. Cross-check candidate names against multiple OCR passes/images when possible.
+10. Return every distinct game supported by the media. Maximum {MAX_GAMES}.
 
 For each candidate return name, confidence 0-100, reason, evidence_type (ocr|visual|audio|metadata|description).
 Return ONLY JSON: {{"candidates":[{{"name":"Game title","confidence":90,"reason":"...","evidence_type":"ocr"}}]}}
 
 EVIDENCE:
 {evidence[:65000]}"""
-    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict game-identification engine. Media evidence outranks captions. Never hallucinate titles."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict game-identification engine. Media evidence outranks captions. Never hallucinate titles. OCR is noisy: normalize obvious character errors before proposing a title, but do not invent unsupported games."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=240)) as response:
