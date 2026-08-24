@@ -190,20 +190,14 @@ class OnMessage(commands.Cog):
     async def handle_game_detection(self, message: discord.Message):
         status_message = None
         parsed = None
-        # Save the original user input before deleting the message.
         captured_input = original_input_text(message)
+        requester_mention = message.author.mention
         try:
             parsed = await process_game_message(message)
             if parsed is None:
                 return
             captured_input = original_input_text(message, parsed)
 
-            # Discord only supports ephemeral responses for interactions (slash
-            # commands, buttons, select menus, etc.). A normal on_message event
-            # cannot send an ephemeral message. We therefore delete the user's
-            # message and keep the captured input in the bot's result embed.
-            # This keeps the detector channel clean while retaining exactly what
-            # was submitted for audit/debugging.
             try:
                 await message.delete()
                 log(f"Game detector | deleted user input | message={message.id}")
@@ -213,7 +207,7 @@ class OnMessage(commands.Cog):
             if parsed.get("status") == "unsupported_url":
                 urls = "\n".join(f"• {url}" for url in parsed.get("unsupported_urls", []))
                 embed = discord.Embed(title="🔗 Game URL Required", description=f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n**Unrecognized URL(s):**\n{urls}\n\n**Original input:**\n```{captured_input[:900]}```")
-                await message.channel.send(embed=embed)
+                await message.channel.send(content=requester_mention, embed=embed)
                 return
 
             status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Collecting metadata, transcribing audio, extracting OCR and identifying every distinct game.")
@@ -225,14 +219,15 @@ class OnMessage(commands.Cog):
             games = result.get("games") or []
             view = GameSelectionView(self, games, installed) if games else None
             result_embed = self.create_result_embed(result, installed, captured_input)
-            await status_message.edit(embed=result_embed, view=view)
+            # Mention the requester exactly once, when the scan has completed.
+            await status_message.edit(content=requester_mention, embed=result_embed, view=view)
         except Exception as error:
             log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
             embed = discord.Embed(title="❌ Game Detection Failed", description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```")
             if status_message:
-                await status_message.edit(embed=embed)
+                await status_message.edit(content=requester_mention, embed=embed)
             else:
-                await message.channel.send(embed=embed)
+                await message.channel.send(content=requester_mention, embed=embed)
 
     @classmethod
     def create_result_embed(cls, result: dict, installed_names: set[str], captured_input: str | None = None) -> discord.Embed:
