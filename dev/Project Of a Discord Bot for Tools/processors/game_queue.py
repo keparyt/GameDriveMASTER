@@ -61,8 +61,9 @@ async def add_games(
 ) -> tuple[list[dict], list[dict]]:
     """Add games while refusing blacklisted titles.
 
-    Returns (added, blocked). Platform metadata is persisted with the queue item
-    so the panel can show console support without re-running detection.
+    The original/store URLs are preserved separately. The queue panel is allowed
+    to resolve a better SDB URL later, without destroying the URL supplied by the
+    analyzer or the source database.
     """
     async with _lock:
         queue = _load(QUEUE_FILE)
@@ -90,6 +91,8 @@ async def add_games(
             item = {
                 "id": next_id,
                 "name": game.get("name"),
+                # Keep every source URL. `queue_url` is deliberately not filled
+                # here because SDB resolution belongs to the public queue panel.
                 "library_url": game.get("library_url"),
                 "library_source": game.get("library_source"),
                 "kepargamedb_url": game.get("kepargamedb_url"),
