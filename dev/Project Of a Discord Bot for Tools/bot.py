@@ -60,6 +60,7 @@ class Bot(commands.Bot):
         log("Loading events...")
         await self.load_extension("events.on_ready")
         await self.load_extension("events.on_message")
+        await self.load_extension("events.dm_game_prompt")
 
         log("All extensions loaded.")
 
