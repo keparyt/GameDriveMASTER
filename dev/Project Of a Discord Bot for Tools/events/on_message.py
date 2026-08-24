@@ -48,21 +48,41 @@ class GameSelectionView(discord.ui.View):
 
     async def select_games(self, interaction: discord.Interaction):
         selected = [self.games[int(value)] for value in self.select.values]
-        already_installed = [g for g in selected if normalize_game_name(str(g.get("name", ""))) in self.installed_names]
+        already_installed = [
+            g for g in selected
+            if normalize_game_name(str(g.get("name", ""))) in self.installed_names
+        ]
         to_queue = [g for g in selected if g not in already_installed]
-        added = await add_games(
+
+        # add_games() returns TWO lists: (added, blocked).
+        # Previously the whole tuple was assigned to `added`, causing the
+        # TypeError when the response tried to access g["name"].
+        added, blocked = await add_games(
             to_queue,
             requester_id=interaction.user.id,
             requester_name=interaction.user.display_name,
         )
+
         await self.cog.refresh_queue_panel()
         parts = []
+
         if added:
-            parts.append("Added to queue: " + ", ".join(str(g["name"]) for g in added))
+            parts.append("Added to queue: " + ", ".join(str(g.get("name", "Unknown game")) for g in added))
+
+        if blocked:
+            blocked_lines = []
+            for game in blocked:
+                name = str(game.get("attempted_name") or game.get("name") or "Unknown game")
+                reason = str(game.get("reason") or "This game is blacklisted.").strip()
+                blocked_lines.append(f"{name} — {reason}")
+            parts.append("🚫 Blacklisted:\n" + "\n".join(blocked_lines))
+
         if already_installed:
             parts.append("Already installed: " + ", ".join(str(g.get("name")) for g in already_installed))
+
         if not parts:
             parts.append("Nothing new was added; those games are already in the queue.")
+
         await interaction.response.send_message("\n".join(parts), ephemeral=True)
 
 
