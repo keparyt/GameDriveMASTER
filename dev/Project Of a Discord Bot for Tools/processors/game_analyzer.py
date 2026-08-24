@@ -3,7 +3,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
-from processors.game_db import find_game, normalize_name
+from processors.game_db import find_game, find_local_game, normalize_name
 from processors.thegamesdb import verify_game
 from processors.instagram_scraper import is_instagram_url, scrape_post
 from utils.helper import log
@@ -68,13 +68,72 @@ async def _download_attachment(url,target):
    r.raise_for_status(); target.write_bytes(await r.read())
 async def _transcribe(video,workdir,index=1): return ''
 
+async def _steam_prefix_completion(query):
+    """Return a Steam title only when the supplied text is a genuine title prefix.
+
+    A prefix match is intentionally much stricter than fuzzy search. This prevents
+    unrelated games such as 'Spheroll' from ever becoming a suggestion for 'Hela'.
+    """
+    q = normalize_name(query).strip()
+    if not q or len(q) < 3:
+        return None
+    try:
+        async with aiohttp.ClientSession(headers={'User-Agent':'KeparGameDetector/1.0'}) as s:
+            async with s.get('https://store.steampowered.com/search/', params={'term':query,'cc':'ca','l':'english'}, timeout=15) as r:
+                if r.status != 200:
+                    return None
+                html = await r.text()
+        ranked=[]
+        for row in BeautifulSoup(html,'html.parser').select('a.search_result_row[data-ds-appid]')[:30]:
+            n=row.select_one('.title'); aid=row.get('data-ds-appid')
+            if not n or not aid or not str(aid).isdigit():
+                continue
+            title=n.get_text(' ',strip=True)
+            tn=normalize_name(title)
+            if tn == q or tn.startswith(q + ' '):
+                # Prefer the shortest genuine continuation; do not rewrite the user's prefix.
+                ranked.append((len(tn), title, int(aid)))
+        if not ranked:
+            return None
+        _, title, appid=min(ranked)
+        return {'name':title,'steam_appid':appid,'steam_url':f'https://store.steampowered.com/app/{appid}/','confidence':100,'reason':f'title completion from prefix {query!r}','evidence_type':'title_completion','steam_verified':True}
+    except Exception as exc:
+        log(f'Steam prefix completion error | {query} | {type(exc).__name__}: {exc}')
+        return None
+
+async def _complete_candidate_name(candidate):
+    """Complete a partial title when a trusted database has an actual prefix match."""
+    name = _clean_candidate_name(candidate.get('name',''))
+    if not name:
+        return candidate
+
+    # Local SDB is preferred because it is the canonical library database.
+    try:
+        local = await find_local_game(name, min_fuzzy=1.0)
+        if local and normalize_name(local.name).startswith(normalize_name(name) + ' '):
+            x=dict(candidate); x['name']=local.name; x['completion_source']='kepardb'; x['completion_url']=local.url
+            log(f'Game title completion | {name!r} -> {local.name!r} | source=KeparDB')
+            return x
+    except Exception as exc:
+        log(f'Game title completion KeparDB error | {name} | {type(exc).__name__}: {exc}')
+
+    steam = await _steam_prefix_completion(name)
+    if steam:
+        x=dict(candidate); x.update(steam)
+        log(f'Game title completion | {name!r} -> {steam["name"]!r} | source=Steam')
+        return x
+    return candidate
+
 async def _verify_and_enrich(candidates):
  verified=[]; unresolved=[]
- for c in _dedupe_candidates(candidates):
+ for original in _dedupe_candidates(candidates):
+  # Never allow a fuzzy verifier to replace a short/partial title with an unrelated game.
+  c=await _complete_candidate_name(original)
   name=c['name']; steam_url=c.get('steam_url')
   if steam_url:
    x=dict(c); x.update({'verified':True,'verification_source':'steam_url','library_url':steam_url,'library_source':'steam','pc_available':True,'has_console':False,'console_platforms':[],'console_names':[]}); verified.append(x); continue
-  platform=await verify_game(name); steam=await _find_steam_match(name)
+  platform=await verify_game(name)
+  steam=await _find_steam_match(name)
   if steam:
    x=dict(c); x.update(steam); x.update({'verified':True,'verification_source':'steam','library_url':x['steam_url'],'library_source':'steam','pc_available':True,'has_console':False,'console_platforms':[],'console_names':[]}); verified.append(x); continue
   if platform:
@@ -96,7 +155,11 @@ async def _find_steam_match(query):
    if n and aid and str(aid).isdigit(): ranked.append((_similarity(query,n.get_text(strip=True)),n.get_text(strip=True),int(aid)))
   if not ranked:return None
   score,title,appid=max(ranked)
-  if not _credible_name_match(query,title,STEAM_MATCH_THRESHOLD):return None
+  # Fuzzy Steam results are accepted only with a strong title match. A result
+  # that merely happens to be the search engine's top result must never leak out.
+  if not _credible_name_match(query,title,STEAM_MATCH_THRESHOLD):
+   log(f'Steam fallback | rejected unrelated result | query={query!r} | best={title!r} | score={score:.3f}')
+   return None
   return {'name':title,'steam_appid':appid,'steam_url':f'https://store.steampowered.com/app/{appid}/','steam_verified':True,'confidence':score*100}
  except Exception as e: log(f'Steam verification error | {query} | {type(e).__name__}: {e}'); return None
 def _result(games,unresolved=None):
