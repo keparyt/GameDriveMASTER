@@ -2,8 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from processors.game_media_analyzer import analyze_game_input
 from processors.game_queue import blacklist_game, remove_queue_item
+from processors.game_media_analyzer import analyze_game_input
 from processors.input_parser import process_game_message
 
 
@@ -18,20 +18,22 @@ class Games(commands.GroupCog, group_name="games"):
 
     @app_commands.command(
         name="analyze",
-        description="Analyze a game name, URL, or supported media source privately.",
+        description="Analyze a game name, URL, or media source privately.",
     )
     @app_commands.describe(
-        input="Game name, Steam URL, Instagram/TikTok/YouTube URL, or direct media URL",
+        input="Game name, Steam/social/direct media URL, or optional media attachment",
+        attachment="Optional image or video attachment to analyze",
     )
-    async def analyze(self, interaction: discord.Interaction, input: str):
-        """Run the game analyzer entirely through an ephemeral interaction.
-
-        This command exists because Discord only supports ephemeral messages for
-        interaction responses. The legacy on_message detector cannot make a
-        channel.send() message ephemeral.
-        """
-        # Acknowledge immediately and make the entire analyzer conversation
-        # private to the requester.
+    async def analyze(
+        self,
+        interaction: discord.Interaction,
+        input: str = "",
+        attachment: discord.Attachment | None = None,
+    ):
+        """Run game identification entirely as a genuine ephemeral interaction."""
+        # Interaction responses are the only Discord messages that support
+        # ephemeral=True. Defer immediately so long OCR/video analysis does not
+        # exceed Discord's initial interaction response deadline.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         cog = self.bot.get_cog("OnMessage")
@@ -42,16 +44,28 @@ class Games(commands.GroupCog, group_name="games"):
             return
 
         class _InteractionMessage:
-            """Small message-compatible adapter for the existing input parser."""
+            """Message-compatible adapter used by the existing parser."""
 
-            def __init__(self, interaction: discord.Interaction, content: str):
+            def __init__(
+                self,
+                interaction: discord.Interaction,
+                content: str,
+                attachment: discord.Attachment | None,
+            ):
                 self.id = interaction.id
                 self.content = content
-                self.attachments = []
+                self.attachments = [attachment] if attachment else []
                 self.author = interaction.user
                 self.channel = interaction.channel
 
-        message = _InteractionMessage(interaction, input.strip())
+        input_text = (input or "").strip()
+        if not input_text and not attachment:
+            await interaction.edit_original_response(
+                content="❌ Provide a game name, supported URL, or image/video attachment."
+            )
+            return
+
+        message = _InteractionMessage(interaction, input_text, attachment)
 
         try:
             parsed = await process_game_message(message)
@@ -72,7 +86,11 @@ class Games(commands.GroupCog, group_name="games"):
                         f"**Unrecognized URL(s):**\n{urls}"
                     ),
                 )
-                await interaction.edit_original_response(embed=embed, content=None)
+                await interaction.edit_original_response(
+                    embed=embed,
+                    content=None,
+                    view=None,
+                )
                 return
 
             status_embed = discord.Embed(
@@ -83,21 +101,35 @@ class Games(commands.GroupCog, group_name="games"):
                     "descriptions only as a last resort."
                 ),
             )
-            await interaction.edit_original_response(embed=status_embed, content=None)
+            await interaction.edit_original_response(
+                embed=status_embed,
+                content=None,
+                view=None,
+            )
 
             result = await analyze_game_input(parsed)
             installed = await cog.installed_game_names()
             games = result.get("games") or []
-            view = cog.GameSelectionView(cog, games, installed) if games else None
-            result_embed = cog.create_result_embed(result, installed, input.strip())
 
-            # This edits the original deferred interaction response, therefore
-            # the result remains genuinely ephemeral.
+            # Import the selection view from the message detector. The view's
+            # callbacks are interactions, so their responses are also ephemeral.
+            from events.on_message import GameSelectionView
+
+            view = GameSelectionView(cog, games, installed) if games else None
+            result_embed = cog.create_result_embed(
+                result,
+                installed,
+                input_text or (attachment.filename if attachment else None),
+            )
+
+            # edit_original_response() edits the deferred ephemeral response;
+            # therefore the progress and final result never become public.
             await interaction.edit_original_response(
                 embed=result_embed,
                 view=view,
                 content=None,
             )
+
         except Exception as error:
             from utils.helper import log
             log(
@@ -108,7 +140,11 @@ class Games(commands.GroupCog, group_name="games"):
                 title="❌ Game Detection Failed",
                 description="Something went wrong while analyzing that content.",
             )
-            await interaction.edit_original_response(embed=embed, content=None, view=None)
+            await interaction.edit_original_response(
+                embed=embed,
+                content=None,
+                view=None,
+            )
 
     @app_commands.command(
         name="downloaded",
