@@ -17,12 +17,6 @@ GAME_QUEUE_CHANNEL_ID = 1541255483917074463
 INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
 QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
 
-# Discord does NOT support ephemeral messages from on_message/channel sends.
-# Ephemeral=True is only available for interaction responses. For the legacy
-# message-based detector, bot status/result messages are therefore deleted very
-# quickly so the channel stays clean. The requester ping is sent as its own
-# short-lived message because editing a message to add a mention does not create
-# a new notification for the user.
 TRANSIENT_BOT_MESSAGE_DELETE_DELAY = 1.5
 REQUESTER_PING_DELETE_DELAY = 0.8
 
@@ -41,7 +35,6 @@ def console_text(game: dict) -> str:
 
 
 def original_input_text(message: discord.Message, parsed: dict | None = None) -> str:
-    """Build a compact, useful record of what the user actually submitted."""
     content = (message.content or "").strip()
     urls = []
     if parsed:
@@ -49,7 +42,6 @@ def original_input_text(message: discord.Message, parsed: dict | None = None) ->
         urls.extend(str(x) for x in parsed.get("unsupported_urls") or [])
     if not urls:
         urls = re.findall(r"https?://[^\s<>]+", content, flags=re.I)
-
     parts = []
     if content:
         parts.append(content)
@@ -58,12 +50,10 @@ def original_input_text(message: discord.Message, parsed: dict | None = None) ->
     for url in urls:
         if url not in parts and url not in content:
             parts.append(url)
-    text = "\n".join(parts).strip()
-    return text or "[No text — media/attachment input]"
+    return "\n".join(parts).strip() or "[No text — media/attachment input]"
 
 
 async def _delete_later(message: discord.Message, delay: float) -> None:
-    """Delete a transient bot message without breaking the detector task."""
     await asyncio.sleep(delay)
     try:
         await message.delete()
@@ -72,18 +62,12 @@ async def _delete_later(message: discord.Message, delay: float) -> None:
 
 
 async def _send_transient(channel, *, content: str | None = None, embed: discord.Embed | None = None, view=None, delay: float = TRANSIENT_BOT_MESSAGE_DELETE_DELAY):
-    """Send a channel message and remove it shortly afterwards.
-
-    This is the closest possible behaviour to ephemeral for the message-based
-    detector. True `ephemeral=True` cannot be used with channel.send().
-    """
     sent = await channel.send(content=content, embed=embed, view=view)
     asyncio.create_task(_delete_later(sent, delay))
     return sent
 
 
 async def _send_requester_ping(channel, user: discord.abc.User, delay: float = REQUESTER_PING_DELETE_DELAY):
-    """Create a separate mention message so Discord generates a notification."""
     ping = await channel.send(content=user.mention, allowed_mentions=discord.AllowedMentions(users=[user]))
     asyncio.create_task(_delete_later(ping, delay))
     return ping
@@ -127,7 +111,6 @@ class GameSelectionView(discord.ui.View):
             parts.append("Already installed: " + ", ".join(str(g.get("name")) for g in already_installed))
         if not parts:
             parts.append("Nothing new was added; those games are already in the queue.")
-        # This is a real interaction, so it CAN and SHOULD be ephemeral.
         await interaction.response.send_message("\n".join(parts), ephemeral=True)
 
 
@@ -213,7 +196,7 @@ class OnMessage(commands.Cog):
             lines.append(f"**#{queue_id} — {shown}** · `{source}` · {platform_suffix} · requested by {requester}")
         description = "Games selected by users that still need to be downloaded.\n\n" + ("\n".join(lines[:50]) if lines else "No games are currently waiting.")
         embed = discord.Embed(title=QUEUE_PANEL_TITLE, description=description[:4096])
-        embed.set_footer(text=f"{len(pending)} game(s) waiting • PC is prioritized when available • Console support is required")
+        embed.set_footer(text=f"{len(pending)} game(s) waiting • PC is prioritized when available • Console is additionally supported when PC is unavailable")
         panel = await self._find_existing_panel(channel)
         if panel:
             try:
@@ -235,7 +218,6 @@ class OnMessage(commands.Cog):
             if parsed is None:
                 return
             captured_input = original_input_text(message, parsed)
-
             try:
                 await message.delete()
                 log(f"Game detector | deleted user input | message={message.id}")
@@ -252,25 +234,16 @@ class OnMessage(commands.Cog):
             status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Inspecting every media item, sampling the full video duration for OCR, transcribing audio, cross-checking sources, and using descriptions only as a last resort.")
             status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
             status_message = await _send_transient(message.channel, embed=status_embed, delay=300)
-
             result = await analyze_game_input(parsed)
             installed = await self.installed_game_names()
             games = result.get("games") or []
             view = GameSelectionView(self, games, installed) if games else None
             result_embed = self.create_result_embed(result, installed, captured_input)
-
-            # Do NOT edit the status message with a mention. Discord does not
-            # generate a new notification when an existing message is edited.
-            # Instead, replace it with the result and send a separate mention.
             try:
                 await status_message.edit(embed=result_embed, view=view)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 status_message = await _send_transient(message.channel, embed=result_embed, view=view, delay=300)
-
-            # Separate message = actual Discord notification for the requester.
-            # It is deleted immediately afterwards so it does not clutter the channel.
             await _send_requester_ping(message.channel, message.author)
-
         except Exception as error:
             log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
             embed = discord.Embed(title="❌ Game Detection Failed", description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```")
@@ -294,17 +267,14 @@ class OnMessage(commands.Cog):
             if captured_input:
                 embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
             return embed
-
         title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
         description = f"Found **{len(games)}** verified game(s). Select which game(s) should be sent to the massive library download queue."
         if unresolved:
             unresolved_names = ", ".join(str(item.get("name", "Unknown game")) for item in unresolved)
             description += f"\n\n⚠️ **Not verified and excluded:** {unresolved_names}"
         embed = discord.Embed(title=title, description=description[:4096])
-
         if captured_input:
             embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-
         lines = []
         for index, game in enumerate(games, start=1):
             name = str(game.get("name", "Unknown game"))
@@ -318,7 +288,6 @@ class OnMessage(commands.Cog):
             lines.append(f"**{index}. {shown}** — {state} · `{evidence_type}` · {platform}")
         for start in range(0, len(lines), 15):
             embed.add_field(name="Detected games" if start == 0 else "More games", value="\n".join(lines[start:start + 15])[:1024], inline=False)
-
         evidence = []
         for index, game in enumerate(games, start=1):
             reason = str(game.get("reason") or "").strip()
@@ -326,7 +295,6 @@ class OnMessage(commands.Cog):
                 evidence.append(f"**{index}.** {reason}")
         if evidence:
             embed.add_field(name="Evidence", value="\n".join(evidence)[:1024], inline=False)
-
         if unresolved:
             unresolved_lines = []
             for item in unresolved:
