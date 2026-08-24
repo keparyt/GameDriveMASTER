@@ -21,3 +21,7 @@ LAN_CONNECTION_TIMEOUT = 600
 # Local KeparGameDB snapshot links are resolved against this prefix.
 # Example: href="games/my-game" -> https://kepardb.com/games/my-game
 KEPAR_DB_URL_PREFIX = "https://kepardb.com"
+
+# TheGamesDB API key. Keep the real key out of git; alternatively set
+# THEGAMESDB_API_KEY in the process environment.
+THEGAMESDB_API_KEY = ""
