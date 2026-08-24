@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from pathlib import Path
 
+from config import (
+    OCR_PASSES,
+    TESSERACT_ENABLED,
+    TESSERACT_BINARY,
+    OCR_SCALE_SMALL_IMAGES,
+    OCR_THRESHOLD,
+    OCR_MIN_SCORE,
+)
 from utils.helper import log
 
 _ENGINE = None
 _ENGINE_LOCK = asyncio.Lock()
-OCR_PASSES = max(2, int(os.getenv("GAME_OCR_PASSES", "4")))
-TESSERACT_ENABLED = os.getenv("GAME_TESSERACT_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def _rapid_engine():
@@ -31,25 +36,26 @@ def _make_variants(image: Path):
         source.verify()
     with Image.open(image) as source:
         img = source.convert("RGB")
+
     max_dim = max(img.size)
-    scale = 2 if max_dim < 1400 else 1
+    scale = OCR_SCALE_SMALL_IMAGES if max_dim < 1400 else 1
     if scale > 1:
         img = img.resize((img.width * scale, img.height * scale), Image.Resampling.LANCZOS)
 
     gray = ImageOps.grayscale(img)
     contrast = ImageEnhance.Contrast(gray).enhance(2.0)
-    sharp = contrast.filter(ImageFilter.SHARPEN).filter(ImageFilter.SHARPEN)
+    sharp = contrast.filter(ImageFilter.SHARPEN)
     auto = ImageOps.autocontrast(gray, cutoff=1)
-    threshold = auto.point(lambda p: 255 if p >= 145 else 0)
+    threshold = auto.point(lambda p: 255 if p >= OCR_THRESHOLD else 0)
     variants = [img, sharp, auto, threshold]
-    return variants[:OCR_PASSES]
+    return variants[:max(1, OCR_PASSES)]
 
 
 async def ocr_image(image: Path) -> str:
-    """Fast multi-pass OCR with a process-wide RapidOCR engine cache.
+    """Fast cached RapidOCR with configurable preprocessing passes.
 
-    Production defaults intentionally avoid repeated model initialization and the
-    expensive Tesseract fallback. Set GAME_TESSERACT_ENABLED=1 only when needed.
+    The default production profile uses only a couple of high-value passes. This
+    avoids the previous 4x OCR cost while still handling stylized game artwork.
     """
     try:
         variants = await asyncio.to_thread(_make_variants, image)
@@ -69,12 +75,10 @@ async def ocr_image(image: Path) -> str:
                         score = float(item[2]) if len(item) > 2 else 0.0
                     except (IndexError, TypeError, ValueError):
                         continue
-                    if text and (score >= 0.30 or len(text) >= 5):
+                    if text and (score >= OCR_MIN_SCORE or len(text) >= 5):
                         words.append(text)
             return words
 
-        # RapidOCR inference is kept serialized because some ONNX runtime builds
-        # are not thread-safe. Images themselves are parallelized by the caller.
         blocks: list[str] = []
         votes: dict[str, int] = {}
         for pass_no, variant in enumerate(variants, 1):
@@ -107,7 +111,11 @@ async def ocr_image(image: Path) -> str:
             try:
                 import pytesseract
                 for variant in variants[1:3]:
-                    text = (await asyncio.to_thread(pytesseract.image_to_string, variant, config="--psm 11")).strip()
+                    text = (await asyncio.to_thread(
+                        pytesseract.image_to_string,
+                        variant,
+                        config="--psm 11",
+                    )).strip()
                     for line in text.splitlines():
                         line = re.sub(r"\s+", " ", line).strip()
                         key = re.sub(r"[^a-z0-9]+", "", line.casefold())
