@@ -10,14 +10,15 @@ from pathlib import Path
 import aiohttp
 from bs4 import BeautifulSoup
 
-from processors.game_db import enrich_games, find_game, normalize_name
+from processors.game_db import find_game, normalize_name
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 MAX_TRANSCRIPT_CHARS = 12000
-MAX_GAMES = 50
-STEAM_MATCH_THRESHOLD = 0.72
+MAX_GAMES = 25
+STEAM_MATCH_THRESHOLD = 0.88
+KEPARDB_MATCH_THRESHOLD = 0.88
 
 
 def _run(command: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
@@ -55,20 +56,40 @@ def _similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, normalize_name(a), normalize_name(b)).ratio()
 
 
+def _token_similarity(a: str, b: str) -> float:
+    at = set(normalize_name(a).split())
+    bt = set(normalize_name(b).split())
+    if not at or not bt:
+        return 0.0
+    return len(at & bt) / len(at | bt)
+
+
+def _credible_name_match(query: str, title: str, threshold: float) -> bool:
+    q = normalize_name(query)
+    t = normalize_name(title)
+    if not q or not t:
+        return False
+    if q == t:
+        return True
+    qt = q.split()
+    tt = t.split()
+    if len(qt) == 1:
+        return len(tt) == 1 and _similarity(q, t) >= 0.96
+    return _similarity(q, t) >= threshold and _token_similarity(q, t) >= 0.60
+
+
 async def analyze_game_input(data: dict) -> dict:
     workdir = Path(tempfile.mkdtemp(prefix="game-detector-"))
     try:
         text = data.get("text", "").strip()
         source_types = set(data.get("source_types", []))
         has_media = bool(data.get("urls") or data.get("video_attachments") or data.get("image_attachments"))
-
         if text and not has_media and (not source_types or source_types == {"direct_text"}):
             candidates = await _extract_direct_text(text)
             if not candidates:
                 return {"status": "unknown", "message": "No explicit game names could be extracted from the text."}
             games, unresolved = await _verify_and_enrich(candidates)
             return _result(games, unresolved)
-
         text_parts = []
         if text:
             text_parts.append(f"Discord text:\n{text}")
@@ -114,7 +135,7 @@ async def analyze_game_input(data: dict) -> dict:
 def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     unresolved = unresolved or []
     if not games:
-        message = "No identified game could be verified on KeparDB or Steam."
+        message = "No identified game could be verified on Steam or KeparDB."
         if unresolved:
             message += " Please provide a direct Steam or KeparDB store page link for each unresolved game."
         return {"status": "needs_store_link" if unresolved else "unknown", "message": message, "game_count": 0, "games": [], "unresolved_games": unresolved, "requires_store_link": bool(unresolved)}
@@ -122,55 +143,43 @@ def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     message = ""
     if unresolved:
         names = ", ".join(item["name"] for item in unresolved)
-        message = f"{len(games)} game(s) verified. These could not be verified: {names}. Please provide a direct Steam or KeparDB store page link for them."
+        message = f"{len(games)} game(s) verified. Could not verify: {names}. Please provide direct Steam or KeparDB store page links."
     return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": message}
 
 
 async def _extract_direct_text(text: str) -> list[dict]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    obvious = []
-    for line in lines:
-        cleaned = re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", line).strip()
-        if cleaned:
-            obvious.append(cleaned)
-    prompt = f"""Extract game titles that are EXPLICITLY WRITTEN in the following text. This is a literal extraction task, NOT a guessing task.
-STRICT RULES:
-- Return only titles whose words are actually present in the input.
-- Never infer a sequel, remake, edition, series entry, or related game.
-- Never replace a title with another title.
-- Never invent a title.
-- Preserve misspellings from the input; verification corrects them later.
-- Return every distinct explicit title, not just 10.
-Return ONLY JSON: {{\"candidates\":[{{\"name\":\"title exactly as written\",\"confidence\":100,\"reason\":\"explicitly present\",\"evidence_type\":\"direct_text\"}}]}}
+    obvious = [re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", line).strip() for line in lines]
+    obvious = [x for x in obvious if x]
+    if len(obvious) == 1:
+        return [{"name": obvious[0], "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"}]
+    prompt = f"""Extract game titles EXPLICITLY WRITTEN in this text. Literal extraction only.
+Never infer a sequel, remake, edition, series entry, or related game.
+Never invent or replace a title. Preserve spelling exactly as supplied.
+Return every distinct explicit title, maximum {MAX_GAMES}.
+Return ONLY JSON: {{\"candidates\":[{{\"name\":\"exact text\",\"confidence\":100,\"reason\":\"explicitly present\",\"evidence_type\":\"direct_text\"}}]}}
 INPUT:\n{text[:30000]}"""
-    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a literal text extraction engine. Never infer or hallucinate game titles."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "Literal extraction only. Never hallucinate game titles."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=180)) as response:
                 response.raise_for_status()
                 body = await response.json()
-        content = body.get("message", {}).get("content", "")
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if not match:
-            raise ValueError("Ollama did not return JSON")
-        parsed = json.loads(match.group(0))
-        candidates = _dedupe_candidates(parsed.get("candidates", []))
-        source_lines = [re.sub(r"[^a-z0-9]+", " ", x.casefold()).strip() for x in obvious]
-        safe = []
-        for candidate in candidates:
-            key = re.sub(r"[^a-z0-9]+", " ", candidate["name"].casefold()).strip()
-            if any(key == line or key in line for line in source_lines):
-                safe.append(candidate)
-        if safe:
-            return safe
+        match = re.search(r"\{.*\}", body.get("message", {}).get("content", ""), re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            candidates = _dedupe_candidates(parsed.get("candidates", []))
+            source = [normalize_name(x) for x in obvious]
+            safe = [c for c in candidates if normalize_name(c["name"]) in source]
+            if safe:
+                return safe
     except Exception as exc:
         log(f"Game detector direct-text AI extraction error | {type(exc).__name__}: {exc}")
     return [{"name": item, "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"} for item in _dedupe_text_lines(obvious)]
 
 
 def _dedupe_text_lines(lines: list[str]) -> list[str]:
-    seen = set()
-    result = []
+    seen, result = set(), []
     for line in lines:
         key = re.sub(r"[^a-z0-9]+", "", line.casefold())
         if key and key not in seen:
@@ -180,12 +189,25 @@ def _dedupe_text_lines(lines: list[str]) -> list[str]:
 
 
 async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
-    verified = []
-    unresolved = []
+    verified, unresolved = [], []
     for candidate in _dedupe_candidates(candidates):
         original_name = str(candidate.get("name", "")).strip()
+        if not original_name:
+            continue
+        steam_match = await _find_steam_match(original_name)
+        if steam_match:
+            item = dict(candidate)
+            item.update(steam_match)
+            item["detected_name"] = original_name
+            item["verified"] = True
+            item["verification_source"] = "steam"
+            item["library_url"] = item["steam_url"]
+            item["library_source"] = "steam"
+            item["correction"] = steam_match["name"] if normalize_name(original_name) != normalize_name(steam_match["name"]) else None
+            verified.append(item)
+            continue
         db_match = await find_game(original_name)
-        if db_match:
+        if db_match and _credible_name_match(original_name, db_match.name, KEPARDB_MATCH_THRESHOLD):
             item = dict(candidate)
             item["detected_name"] = original_name
             item["name"] = db_match.name
@@ -198,21 +220,8 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
             item["correction"] = db_match.name if normalize_name(original_name) != normalize_name(db_match.name) else None
             verified.append(item)
             continue
-        steam_match = await _find_steam_match(original_name)
-        if steam_match:
-            item = dict(candidate)
-            item.update(steam_match)
-            item["verified"] = True
-            item["verification_source"] = "steam"
-            item["library_url"] = item["steam_url"]
-            item["library_source"] = "steam"
-            item["correction"] = steam_match["name"] if normalize_name(original_name) != normalize_name(steam_match["name"]) else None
-            verified.append(item)
-            continue
-        unresolved.append({"name": original_name, "detected_name": original_name, "confidence": float(candidate.get("confidence", 0)), "reason": "Not found with a sufficiently reliable match in KeparDB or Steam.", "requires_store_link": True})
-    verified = await enrich_games(verified)
-    verified = [game for game in verified if game.get("verified") is True]
-    return verified, unresolved
+        unresolved.append({"name": original_name, "detected_name": original_name, "confidence": float(candidate.get("confidence", 0)), "reason": "No sufficiently reliable Steam or KeparDB match.", "requires_store_link": True})
+    return verified[:MAX_GAMES], unresolved
 
 
 async def _find_steam_match(query: str) -> dict | None:
@@ -224,24 +233,25 @@ async def _find_steam_match(query: str) -> dict | None:
                     return None
                 html = await response.text()
         soup = BeautifulSoup(html, "html.parser")
-        best = None
-        best_score = 0.0
+        ranked = []
         for row in soup.select("a.search_result_row[data-ds-appid]")[:20]:
             title_node = row.select_one(".title")
-            if not title_node:
+            appid = row.get("data-ds-appid")
+            if not title_node or not appid or not str(appid).isdigit():
                 continue
             title = " ".join(title_node.stripped_strings).strip()
-            appid = row.get("data-ds-appid")
-            if not title or not appid or not str(appid).isdigit():
+            if not title:
                 continue
-            score = _similarity(query, title)
-            if score > best_score:
-                best_score = score
-                best = (title, int(appid))
-        if not best or best_score < STEAM_MATCH_THRESHOLD:
+            seq = _similarity(query, title)
+            tok = _token_similarity(query, title)
+            ranked.append((seq, tok, title, int(appid)))
+        if not ranked:
             return None
-        title, appid = best
-        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": max(0.0, min(100.0, best_score * 100.0))}
+        seq, tok, title, appid = max(ranked, key=lambda x: (x[0] * 0.7 + x[1] * 0.3, x[0], x[1]))
+        if not _credible_name_match(query, title, STEAM_MATCH_THRESHOLD):
+            log(f"Game verification | Steam rejected | query={query!r} best={title!r} similarity={seq:.3f} tokens={tok:.3f}")
+            return None
+        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": (seq * 0.7 + tok * 0.3) * 100}
     except Exception as exc:
         log(f"Steam verification error | {query} | {type(exc).__name__}: {exc}")
         return None
@@ -327,7 +337,10 @@ async def _ocr_image(image: Path) -> str:
 
 
 async def _ask_ollama(evidence: str) -> dict:
-    prompt = f"""Identify ALL video games actually supported by this content. There may be multiple distinct games. Do not invent, infer sequels, or rename titles. A game must have meaningful evidence in the supplied content. Return every distinct supported game, up to {MAX_GAMES}.
+    prompt = f"""Identify ALL video games actually supported by this content.
+There may be multiple distinct games.
+Do not invent, infer sequels, or rename titles. A game must have meaningful evidence in the supplied content.
+Return every distinct supported game, maximum {MAX_GAMES}.
 Return ONLY JSON: {{\"candidates\":[{{\"name\":\"Game title\",\"confidence\":0-100,\"reason\":\"short evidence\",\"evidence_type\":\"audio|caption|ocr|visual|other\"}}]}}
 CONTENT:\n{evidence[:30000]}"""
     payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict video-game identification assistant. Never hallucinate a title."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
