@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-
 @dataclass
 class InstagramMedia:
     url: str
@@ -18,14 +17,12 @@ class InstagramMedia:
     thumbnail_url: str | None = None
     index: int = 0
 
-
 @dataclass
 class InstagramPost:
     url: str
     caption: str = ""
     media: list[InstagramMedia] | None = None
     author: str | None = None
-
 
 INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com", "m.instagram.com"}
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
@@ -49,9 +46,7 @@ def _clean_url(value: Any) -> str | None:
         value = "https:" + value
     if value.startswith("http://"):
         value = "https://" + value[7:]
-    if not value.startswith("https://"):
-        return None
-    return value
+    return value if value.startswith("https://") else None
 
 
 def _looks_like_media(url: str) -> bool:
@@ -61,16 +56,11 @@ def _looks_like_media(url: str) -> bool:
 
 def _walk_json(value: Any, media: list[InstagramMedia], caption_box: list[str], seen: set[str]) -> None:
     if isinstance(value, dict):
-        candidates: list[tuple[Any, str]] = []
-        for key in ("display_url", "thumbnail_src", "image_url", "src"):
-            if key in value:
-                candidates.append((value[key], "image"))
-        for key in ("video_url", "video_versions"):
-            if key in value:
-                candidates.append((value[key], "video"))
-        for candidate, media_type in candidates:
-            values = candidate if isinstance(candidate, list) else [candidate]
-            for item in values:
+        for key, media_type in (("display_url", "image"), ("thumbnail_src", "image"), ("image_url", "image"), ("src", "image"), ("video_url", "video"), ("video_versions", "video")):
+            if key not in value:
+                continue
+            candidates = value[key] if isinstance(value[key], list) else [value[key]]
+            for item in candidates:
                 if isinstance(item, dict):
                     item = item.get("url") or item.get("src")
                 cleaned = _clean_url(item)
@@ -89,12 +79,7 @@ def _walk_json(value: Any, media: list[InstagramMedia], caption_box: list[str], 
 
 
 async def _fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"}
     async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as response:
         response.raise_for_status()
         return await response.text(errors="replace")
@@ -104,6 +89,9 @@ async def _download_media(session: aiohttp.ClientSession, item: InstagramMedia, 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36", "Referer": "https://www.instagram.com/"}
     async with session.get(item.url, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as response:
         response.raise_for_status()
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if "text/html" in content_type or "application/json" in content_type:
+            raise RuntimeError(f"Instagram CDN returned {content_type} instead of media")
         with target.open("wb") as file:
             async for chunk in response.content.iter_chunked(1024 * 1024):
                 file.write(chunk)
@@ -111,12 +99,7 @@ async def _download_media(session: aiohttp.ClientSession, item: InstagramMedia, 
 
 
 async def scrape_post(url: str, workdir: Path | None = None):
-    """Scrape public Instagram media and optionally download it for the analyzer.
-
-    With no workdir, returns InstagramPost for callers that only need URLs.
-    With workdir, returns (metadata, downloaded_paths), matching the analyzer's
-    media downloader contract.
-    """
+    """Scrape public Instagram media; with workdir, download each media item."""
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
         html = await _fetch_html(session, url)
@@ -130,12 +113,11 @@ async def scrape_post(url: str, workdir: Path | None = None):
             if not raw.strip():
                 continue
             try:
-                obj = json.loads(raw)
-                _walk_json(obj, media, caption_box, seen)
+                _walk_json(json.loads(raw), media, caption_box, seen)
             except Exception:
                 pass
-
-            for match in re.findall(r'https?:\\?/\\?/[^"\\\'\s<>]+', raw):
+            # Extract escaped CDN URLs from non-JSON JavaScript safely.
+            for match in re.findall(r'https?:\\?/\\?/[^"\'\s<>]+', raw):
                 cleaned = _clean_url(match)
                 if cleaned and _looks_like_media(cleaned) and cleaned not in seen:
                     seen.add(cleaned)
@@ -169,15 +151,13 @@ async def scrape_post(url: str, workdir: Path | None = None):
             raise RuntimeError("Instagram scraper found no public media. The post may require authentication or Instagram may have blocked the request.")
 
         caption = caption_box[0] if caption_box else ""
-        post = InstagramPost(url=url, caption=caption, media=deduped)
-
         if workdir is None:
-            return post
+            return InstagramPost(url=url, caption=caption, media=deduped)
 
         workdir.mkdir(parents=True, exist_ok=True)
         downloaded: list[Path] = []
         errors: list[str] = []
-        for item in deduped:
+        for item in deduped[:20]:
             suffix = ".mp4" if item.media_type == "video" else ".jpg"
             target = workdir / f"instagram_{item.index:03d}{suffix}"
             try:
@@ -187,21 +167,10 @@ async def scrape_post(url: str, workdir: Path | None = None):
                 errors.append(f"item {item.index}: {type(exc).__name__}: {exc}")
 
         if not downloaded:
-            detail = "; ".join(errors[-3:])
-            raise RuntimeError(f"Instagram media was discovered but could not be downloaded. {detail}")
+            raise RuntimeError("Instagram media was discovered but none could be downloaded: " + "; ".join(errors[-3:]))
 
-        metadata = {
-            "title": f"Instagram post {urlparse(url).path.rstrip('/').split('/')[-1]}",
-            "description": caption,
-            "uploader": post.author,
-            "instagram_url": url,
-            "media_count": len(downloaded),
-            "entries": [
-                {"url": item.url, "media_type": item.media_type, "index": item.index}
-                for item in deduped
-            ],
-        }
-        return metadata, downloaded[:20]
+        metadata = {"title": f"Instagram post {urlparse(url).path.rstrip('/').split('/')[-1]}", "description": caption, "uploader": None, "instagram_url": url, "media_count": len(downloaded), "entries": [{"url": item.url, "media_type": item.media_type, "index": item.index} for item in deduped]}
+        return metadata, downloaded
 
 
 async def scrape_media_urls(url: str) -> list[str]:
