@@ -1,0 +1,57 @@
+name: Apply game platform verification patch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch game analyzer
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('dev/Project Of a Discord Bot for Tools/processors/game_analyzer.py')
+          text = path.read_text(encoding='utf-8')
+
+          if 'from processors.thegamesdb import verify_game' not in text:
+              text = text.replace(
+                  'from processors.game_db import find_game, normalize_name\n',
+                  'from processors.game_db import find_game, normalize_name\nfrom processors.thegamesdb import verify_game\n'
+              )
+
+          old = '''        steam_match = await _find_steam_match(original_name)\n        if steam_match:\n            item = dict(candidate)\n            item.update(steam_match)\n            item["detected_name"] = candidate.get("detected_name", original_name)\n            item["verified"] = True\n            item["verification_source"] = "steam"\n            item["library_url"] = item["steam_url"]\n            item["library_source"] = "steam"\n            item["correction"] = steam_match["name"] if normalize_name(item["detected_name"]) != normalize_name(steam_match["name"]) else None\n            if item.get("correction"):\n                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], steam_match["name"])\n                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {steam_match['name']}"\n                item["confidence"] = item["ai_correction_confidence"]\n            verified.append(item)\n            continue\n'''
+
+          new = '''        # Platform gate: a game must exist on a real console. When PC exists,\n        # PC is always the selected/canonical version, regardless of whether the\n        # PC storefront is Steam, Epic, Battle.net, etc.\n        platform_info = await verify_game(original_name)\n        if platform_info is None:\n            unresolved.append({\n                "name": candidate.get("detected_name", original_name),\n                "detected_name": candidate.get("detected_name", original_name),\n                "confidence": float(candidate.get("confidence", 0)),\n                "reason": "TheGamesDB could not verify a console release for this title.",\n                "requires_store_link": True,\n            })\n            continue\n\n        steam_match = await _find_steam_match(original_name)\n        if steam_match:\n            item = dict(candidate)\n            item.update(steam_match)\n            item["detected_name"] = candidate.get("detected_name", original_name)\n            item["verified"] = True\n            item["verification_source"] = "steam"\n            item["library_url"] = item["steam_url"]\n            item["library_source"] = "steam"\n            item["correction"] = steam_match["name"] if normalize_name(item["detected_name"]) != normalize_name(steam_match["name"]) else None\n            if item.get("correction"):\n                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], steam_match["name"])\n                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {steam_match['name']}"\n                item["confidence"] = item["ai_correction_confidence"]\n            item["tgdb_game_id"] = platform_info.game_id\n            item["tgdb_url"] = platform_info.url\n            item["selected_platform"] = platform_info.selected_platform_name\n            item["console_platforms"] = platform_info.console_names\n            item["console_names"] = platform_info.console_names\n            item["pc_available"] = bool(platform_info.pc_platform)\n            item["has_console"] = True\n            verified.append(item)\n            continue\n'''
+
+          if old not in text:
+              raise SystemExit('Expected Steam verification block was not found; refusing to make a partial patch.')
+          text = text.replace(old, new, 1)
+
+          old_db = '''        db_match = await find_game(original_name)\n        if db_match and _credible_name_match(original_name, db_match.name, KEPARDB_MATCH_THRESHOLD):\n            item = dict(candidate)\n            item["detected_name"] = candidate.get("detected_name", original_name)\n            item["name"] = db_match.name\n            item["kepargamedb_name"] = db_match.name\n            item["kepargamedb_url"] = db_match.url\n            item["library_url"] = db_match.url\n            item["library_source"] = "kepardb"\n            item["verified"] = True\n            item["verification_source"] = "kepardb"\n            item["correction"] = db_match.name if normalize_name(item["detected_name"]) != normalize_name(db_match.name) else None\n            if item.get("correction"):\n                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], db_match.name)\n                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {db_match.name}"\n                item["confidence"] = item["ai_correction_confidence"]\n            verified.append(item)\n            continue\n'''
+
+          new_db = '''        db_match = await find_game(original_name)\n        if db_match and _credible_name_match(original_name, db_match.name, KEPARDB_MATCH_THRESHOLD):\n            item = dict(candidate)\n            item["detected_name"] = candidate.get("detected_name", original_name)\n            item["name"] = db_match.name\n            item["kepargamedb_name"] = db_match.name if db_match.source == "kepardb" else None\n            item["kepargamedb_url"] = db_match.url if db_match.source == "kepardb" else None\n            item["library_url"] = db_match.url\n            item["library_source"] = db_match.source\n            item["verified"] = True\n            item["verification_source"] = db_match.source\n            item["tgdb_game_id"] = db_match.tgdb_game_id\n            item["tgdb_url"] = f"https://thegamesdb.net/game.php?id={db_match.tgdb_game_id}" if db_match.tgdb_game_id else None\n            item["selected_platform"] = db_match.selected_platform\n            item["console_platforms"] = list(db_match.console_platforms)\n            item["console_names"] = list(db_match.console_platforms)\n            item["pc_available"] = db_match.pc_available\n            item["has_console"] = bool(db_match.console_platforms)\n            item["correction"] = db_match.name if normalize_name(item["detected_name"]) != normalize_name(db_match.name) else None\n            if item.get("correction"):\n                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], db_match.name)\n                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {db_match.name}"\n                item["confidence"] = item["ai_correction_confidence"]\n            verified.append(item)\n            continue\n'''
+
+          if old_db not in text:
+              raise SystemExit('Expected KeparDB verification block was not found; refusing to make a partial patch.')
+          text = text.replace(old_db, new_db, 1)
+
+          path.write_text(text, encoding='utf-8')
+          print('game_analyzer.py patched successfully')
+
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'dev/Project Of a Discord Bot for Tools/processors/game_analyzer.py'
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix game platform verification [skip ci]'
+          git push
