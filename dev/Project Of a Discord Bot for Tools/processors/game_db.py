@@ -117,12 +117,13 @@ async def refresh_game_database(force: bool = False) -> list[GameDBEntry]:
         return _cache
 
 
-async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | None:
-    """Find a local KeparGameDB entry, then fall back to TheGamesDB.
+async def find_local_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | None:
+    """Look up a game in the local sdb.html only.
 
-    The external fallback is deliberately strict: a title is accepted only when
-    TheGamesDB has a console release. When a PC release also exists, its PC
-    platform is selected as the canonical download target.
+    This deliberately has NO external fallback. It is used by the public queue
+    panel when choosing the URL to display, so the panel can prefer the canonical
+    SDB/KeparGameDB URL while still falling back to the URL already stored on the
+    queue item when the local database has no match.
     """
     entries = await refresh_game_database()
     query = _match_key(game_name)
@@ -131,11 +132,14 @@ async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | No
 
     exact = [entry for entry in entries if _match_key(entry.name) == query]
     if exact:
-        return await _with_platform_metadata(exact[0], game_name)
+        return exact[0]
 
-    contained = [entry for entry in entries if query in _match_key(entry.name) or _match_key(entry.name) in query]
+    contained = [
+        entry for entry in entries
+        if query in _match_key(entry.name) or _match_key(entry.name) in query
+    ]
     if contained:
-        return await _with_platform_metadata(min(contained, key=lambda entry: len(_match_key(entry.name))), game_name)
+        return min(contained, key=lambda entry: len(_match_key(entry.name)))
 
     best: tuple[float, GameDBEntry | None] = (0.0, None)
     for entry in entries:
@@ -144,7 +148,20 @@ async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | No
         if ratio > best[0]:
             best = (ratio, entry)
     if best[1] is not None and best[0] >= min_fuzzy:
-        return await _with_platform_metadata(best[1], game_name)
+        return best[1]
+    return None
+
+
+async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | None:
+    """Find a local KeparGameDB entry, then fall back to TheGamesDB.
+
+    The external fallback is deliberately strict: a title is accepted only when
+    TheGamesDB has a console release. When a PC release also exists, its PC
+    platform is selected as the canonical download target.
+    """
+    local = await find_local_game(game_name, min_fuzzy)
+    if local:
+        return await _with_platform_metadata(local, game_name)
 
     # Local DB miss: use TGDB as the cross-platform authority. This is what lets
     # non-Steam PC games such as Epic/Battle.net titles remain detectable.
@@ -166,8 +183,6 @@ async def _with_platform_metadata(entry: GameDBEntry, original_name: str) -> Gam
     """Require console support for local DB matches too, while preserving the local URL."""
     tgdb = await verify_game(entry.name or original_name)
     if tgdb is None:
-        # Do not silently drop an existing local entry when TGDB is unavailable or
-        # no API key is configured. Existing KeparDB/Steam behavior remains usable.
         return entry
     return GameDBEntry(
         name=entry.name,
