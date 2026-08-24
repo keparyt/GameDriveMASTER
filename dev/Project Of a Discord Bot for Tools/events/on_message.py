@@ -17,6 +17,15 @@ GAME_QUEUE_CHANNEL_ID = 1541255483917074463
 INSTALLED_GAMES_CHANNEL_ID = 1537916110488215572
 QUEUE_PANEL_TITLE = "📥 Massive Library — Download Queue"
 
+# Discord does NOT support ephemeral messages from on_message/channel sends.
+# Ephemeral=True is only available for interaction responses. For the legacy
+# message-based detector, bot status/result messages are therefore deleted very
+# quickly so the channel stays clean. The requester ping is sent as its own
+# short-lived message because editing a message to add a mention does not create
+# a new notification for the user.
+TRANSIENT_BOT_MESSAGE_DELETE_DELAY = 1.5
+REQUESTER_PING_DELETE_DELAY = 0.8
+
 
 def normalize_game_name(value: str) -> str:
     value = re.sub(r"[^a-z0-9]+", " ", value.casefold())
@@ -51,6 +60,33 @@ def original_input_text(message: discord.Message, parsed: dict | None = None) ->
             parts.append(url)
     text = "\n".join(parts).strip()
     return text or "[No text — media/attachment input]"
+
+
+async def _delete_later(message: discord.Message, delay: float) -> None:
+    """Delete a transient bot message without breaking the detector task."""
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def _send_transient(channel, *, content: str | None = None, embed: discord.Embed | None = None, view=None, delay: float = TRANSIENT_BOT_MESSAGE_DELETE_DELAY):
+    """Send a channel message and remove it shortly afterwards.
+
+    This is the closest possible behaviour to ephemeral for the message-based
+    detector. True `ephemeral=True` cannot be used with channel.send().
+    """
+    sent = await channel.send(content=content, embed=embed, view=view)
+    asyncio.create_task(_delete_later(sent, delay))
+    return sent
+
+
+async def _send_requester_ping(channel, user: discord.abc.User, delay: float = REQUESTER_PING_DELETE_DELAY):
+    """Create a separate mention message so Discord generates a notification."""
+    ping = await channel.send(content=user.mention, allowed_mentions=discord.AllowedMentions(users=[user]))
+    asyncio.create_task(_delete_later(ping, delay))
+    return ping
 
 
 class GameSelectionView(discord.ui.View):
@@ -91,6 +127,7 @@ class GameSelectionView(discord.ui.View):
             parts.append("Already installed: " + ", ".join(str(g.get("name")) for g in already_installed))
         if not parts:
             parts.append("Nothing new was added; those games are already in the queue.")
+        # This is a real interaction, so it CAN and SHOULD be ephemeral.
         await interaction.response.send_message("\n".join(parts), ephemeral=True)
 
 
@@ -193,7 +230,6 @@ class OnMessage(commands.Cog):
         status_message = None
         parsed = None
         captured_input = original_input_text(message)
-        requester_mention = message.author.mention
         try:
             parsed = await process_game_message(message)
             if parsed is None:
@@ -209,26 +245,44 @@ class OnMessage(commands.Cog):
             if parsed.get("status") == "unsupported_url":
                 urls = "\n".join(f"• {url}" for url in parsed.get("unsupported_urls", []))
                 embed = discord.Embed(title="🔗 Game URL Required", description=f"{parsed.get('message', 'That URL is not a supported game/media source.')}\n\n**Unrecognized URL(s):**\n{urls}\n\n**Original input:**\n```{captured_input[:900]}```")
-                await message.channel.send(content=requester_mention, embed=embed)
+                await _send_transient(message.channel, embed=embed)
+                await _send_requester_ping(message.channel, message.author)
                 return
 
             status_embed = discord.Embed(title="🎮 Analyzing Games...", description="Inspecting every media item, sampling the full video duration for OCR, transcribing audio, cross-checking sources, and using descriptions only as a last resort.")
             status_embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-            status_message = await message.channel.send(embed=status_embed)
+            status_message = await _send_transient(message.channel, embed=status_embed, delay=300)
 
             result = await analyze_game_input(parsed)
             installed = await self.installed_game_names()
             games = result.get("games") or []
             view = GameSelectionView(self, games, installed) if games else None
             result_embed = self.create_result_embed(result, installed, captured_input)
-            await status_message.edit(content=requester_mention, embed=result_embed, view=view)
+
+            # Do NOT edit the status message with a mention. Discord does not
+            # generate a new notification when an existing message is edited.
+            # Instead, replace it with the result and send a separate mention.
+            try:
+                await status_message.edit(embed=result_embed, view=view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                status_message = await _send_transient(message.channel, embed=result_embed, view=view, delay=300)
+
+            # Separate message = actual Discord notification for the requester.
+            # It is deleted immediately afterwards so it does not clutter the channel.
+            await _send_requester_ping(message.channel, message.author)
+
         except Exception as error:
             log(f"Game detection error | message={message.id} | {type(error).__name__}: {error}")
             embed = discord.Embed(title="❌ Game Detection Failed", description=f"Something went wrong while analyzing that content.\n\n**Original input:**\n```{captured_input[:900]}```")
             if status_message:
-                await status_message.edit(content=requester_mention, embed=embed)
+                try:
+                    await status_message.edit(embed=embed)
+                    asyncio.create_task(_delete_later(status_message, TRANSIENT_BOT_MESSAGE_DELETE_DELAY))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    await _send_transient(message.channel, embed=embed)
             else:
-                await message.channel.send(content=requester_mention, embed=embed)
+                await _send_transient(message.channel, embed=embed)
+            await _send_requester_ping(message.channel, message.author)
 
     @classmethod
     def create_result_embed(cls, result: dict, installed_names: set[str], captured_input: str | None = None) -> discord.Embed:
