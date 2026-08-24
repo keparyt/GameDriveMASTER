@@ -293,9 +293,9 @@ async def analyze_game_input(data: dict) -> dict:
 def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     unresolved = unresolved or []
     if not games:
-        message = "No identified game could be verified on Steam or KeparDB."
+        message = "No identified game could be verified."
         if unresolved:
-            message += " Please provide a direct Steam or KeparDB store page link for each unresolved game."
+            message += " Please provide a direct game/store page link for each unresolved game."
         return {"status": "needs_store_link" if unresolved else "unknown", "message": message, "game_count": 0, "games": [], "unresolved_games": unresolved, "requires_store_link": bool(unresolved)}
     first = games[0]
     message = ""
@@ -414,7 +414,30 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
                 item["confidence"] = item["ai_correction_confidence"]
             verified.append(item)
             continue
-        unresolved.append({"name": candidate.get("detected_name", original_name), "detected_name": candidate.get("detected_name", original_name), "confidence": float(candidate.get("confidence", 0)), "reason": "No sufficiently reliable Steam or KeparDB match.", "requires_store_link": True})
+        # TheGamesDB already established that this is a real game with at least one
+        # console release. Steam/KeparDB are enrichment sources, not a second
+        # mandatory gate: console-only titles such as inFAMOUS must be accepted.
+        item = dict(candidate)
+        item["detected_name"] = candidate.get("detected_name", original_name)
+        item["name"] = platform_info.title or original_name
+        item["verified"] = True
+        item["verification_source"] = "thegamesdb"
+        item["library_url"] = platform_info.url
+        item["library_source"] = "thegamesdb"
+        item["tgdb_game_id"] = platform_info.game_id
+        item["tgdb_url"] = platform_info.url
+        item["selected_platform"] = platform_info.selected_platform_name
+        item["console_platforms"] = platform_info.console_names
+        item["console_names"] = platform_info.console_names
+        item["pc_available"] = bool(platform_info.pc_platform)
+        item["has_console"] = True
+        item["steam_verified"] = False
+        item["correction"] = item["name"] if normalize_name(item["detected_name"]) != normalize_name(item["name"]) else None
+        if item.get("correction"):
+            item["reason"] = f"TheGamesDB title normalization: {item['detected_name']} → {item['name']}"
+        else:
+            item["reason"] = "Verified by TheGamesDB with a console release."
+        verified.append(item)
     return verified[:MAX_GAMES], unresolved
 
 
