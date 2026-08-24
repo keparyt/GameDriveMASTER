@@ -12,7 +12,8 @@ import aiohttp
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+# DeepSeek-R1 7B is the default local reasoning model for game identification.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 MAX_TRANSCRIPT_CHARS = 12000
 
 
@@ -57,8 +58,6 @@ async def analyze_game_input(data: dict) -> dict:
             await _download_attachment(item["url"], target)
             media_files.append(target)
 
-        # OCR for screenshots is optional; don't make the whole detector fail
-        # if Tesseract isn't installed.
         for item in data.get("image_attachments", []):
             target = workdir / item["filename"]
             await _download_attachment(item["url"], target)
@@ -66,7 +65,6 @@ async def analyze_game_input(data: dict) -> dict:
             if ocr:
                 text_parts.append(f"Screenshot OCR:\n{ocr[:6000]}")
 
-        # Extract speech from the first useful video.
         if media_files:
             transcript = await _transcribe(media_files[0], workdir)
             if transcript:
@@ -83,7 +81,6 @@ async def analyze_game_input(data: dict) -> dict:
         if not candidates:
             return {"status": "unknown", "message": "I couldn't identify a game from the available evidence."}
 
-        # Verify candidates against Steam's public store search page.
         verified = await _verify_steam(candidates)
         best = verified[0] if verified else candidates[0]
 
@@ -114,8 +111,6 @@ async def _download_url(url: str, workdir: Path) -> tuple[dict, Path | None]:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr[-1000:])
 
-    # dump-single-json means stdout contains the metadata JSON. Download it
-    # separately so failures are easier to diagnose.
     try:
         metadata = json.loads(proc.stdout.strip().splitlines()[-1])
     except Exception:
@@ -204,7 +199,7 @@ CONTENT:
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": "You are a strict video-game identification assistant."},
+            {"role": "system", "content": "You are a strict video-game identification assistant. Return only the requested JSON and do not invent games."},
             {"role": "user", "content": prompt},
         ],
         "options": {"temperature": 0.1},
