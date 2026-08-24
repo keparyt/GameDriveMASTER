@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -23,6 +22,8 @@ MAX_GAMES = 25
 STEAM_MATCH_THRESHOLD = 0.88
 KEPARDB_MATCH_THRESHOLD = 0.88
 MAX_SOCIAL_MEDIA_ITEMS = 20
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
 
 
 def _run(command: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
@@ -59,105 +60,55 @@ def _similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, normalize_name(a), normalize_name(b)).ratio()
 
 
-def _token_similarity(a: str, b: str) -> float:
-    at = set(normalize_name(a).split())
-    bt = set(normalize_name(b).split())
-    if not at or not bt:
-        return 0.0
-    return len(at & bt) / len(at | bt)
-
-
 def _word_similarity(a: str, b: str) -> float:
     aw = normalize_name(a).split()
     bw = normalize_name(b).split()
     if not aw or not bw or abs(len(aw) - len(bw)) > 1:
         return 0.0
-    used = set()
-    scores = []
+    used, scores = set(), []
     for word in aw:
-        best = 0.0
-        best_index = None
+        best, best_i = 0.0, None
         for i, other in enumerate(bw):
             if i in used:
                 continue
             score = difflib.SequenceMatcher(None, word, other).ratio()
             if score > best:
-                best = score
-                best_index = i
-        if best_index is not None:
-            used.add(best_index)
+                best, best_i = score, i
+        if best_i is not None:
+            used.add(best_i)
         scores.append(best)
     return sum(scores) / len(scores) if scores else 0.0
 
 
-def _correction_confidence(original: str, corrected: str) -> float:
-    original_norm = normalize_name(original)
-    corrected_norm = normalize_name(corrected)
-    if not original_norm or not corrected_norm:
-        return 0.0
-    if original_norm == corrected_norm:
-        return 100.0
-    sequence = _similarity(original, corrected)
-    word = _word_similarity(original, corrected)
-    score = (sequence * 0.60 + word * 0.40) * 100.0
-    return round(max(0.0, min(99.0, score)), 1)
-
-
 def _credible_name_match(query: str, title: str, threshold: float) -> bool:
-    q = normalize_name(query)
-    t = normalize_name(title)
+    q, t = normalize_name(query), normalize_name(title)
     if not q or not t:
         return False
     if q == t:
         return True
-    sequence = _similarity(query, title)
-    word = _word_similarity(query, title)
-    qt = q.split()
-    tt = t.split()
-    if len(qt) >= 2 and len(tt) >= 2:
-        return sequence >= 0.82 and word >= 0.82
-    if len(qt) == 1 and len(tt) == 1:
-        return sequence >= 0.93
-    return sequence >= threshold and word >= 0.82
+    seq, word = _similarity(query, title), _word_similarity(query, title)
+    if len(q.split()) >= 2 and len(t.split()) >= 2:
+        return seq >= 0.82 and word >= 0.82
+    if len(q.split()) == 1 and len(t.split()) == 1:
+        return seq >= 0.93
+    return seq >= threshold and word >= 0.82
+
+
+def _correction_confidence(original: str, corrected: str) -> float:
+    if normalize_name(original) == normalize_name(corrected):
+        return 100.0
+    return round((_similarity(original, corrected) * .6 + _word_similarity(original, corrected) * .4) * 100, 1)
 
 
 async def _deepseek_correct_name(name: str) -> str:
-    prompt = f"""You are correcting a user's misspelled video game title.
-
-USER INPUT:
-{name}
-
-Your task:
-1. Correct spelling, phonetic spelling, missing apostrophes, plurals, and obvious typing mistakes.
-2. PRESERVE EVERY MEANINGFUL GAME-TITLE WORD from the input. Do not shorten the title.
-3. If the input contains a recognizable subtitle or distinctive phrase such as 'security breach', KEEP IT.
-4. You may restore missing small words such as 'of', 'the', 'at', etc. when they are clearly part of the real title.
-5. You may correct singular/plural forms when the real title requires it.
-6. Do NOT substitute the input with a more famous base game if the input clearly describes a specific subtitle/entry.
-7. Do NOT invent a sequel, remake, edition, or unrelated game.
-8. The result must be the most likely REAL video game title that preserves the meaning of the input.
-9. If the input is already correct, return it unchanged.
-10. If genuinely uncertain, return the input unchanged.
-
-Examples:
-- 'hello neigbour' -> 'Hello Neighbor'
-- 'five night a fweddy secu breach' -> "Five Nights at Freddy's: Security Breach"
-- 'five nights freddy security breach' -> "Five Nights at Freddy's: Security Breach"
-- 'elden ring' -> 'Elden Ring'
-
-Return ONLY the corrected game title. No explanation. No quotes.
-
-INPUT: {name}
-"""
-    payload = {
-        "model": OLLAMA_MODEL,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": "Correct video game names precisely. Preserve meaningful subtitles and never collapse a specific game into its base series title."},
-            {"role": "user", "content": prompt},
-        ],
-        "options": {"temperature": 0},
-    }
+    prompt = f"""Correct this video game title without removing meaningful subtitle words.
+Preserve specific entries/subtitles. Do not replace a specific game with its base series.
+If uncertain, return the input unchanged.
+Return ONLY the corrected title.
+INPUT: {name}"""
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [
+        {"role": "system", "content": "Correct video game names precisely."},
+        {"role": "user", "content": prompt}], "options": {"temperature": 0}}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
@@ -168,8 +119,6 @@ INPUT: {name}
         corrected = corrected.splitlines()[-1].strip(" \"'`*•") if corrected else ""
         if not corrected or len(corrected) > 150:
             return name
-        if any(marker in corrected.casefold() for marker in ("because", "the correct", "i think", "i would", "likely ")):
-            return name
         return corrected
     except Exception as exc:
         log(f"Game detector DeepSeek correction error | {name!r} | {type(exc).__name__}: {exc}")
@@ -177,160 +126,15 @@ INPUT: {name}
 
 
 def _is_instagram_url(url: str) -> bool:
-    host = ""
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        pass
+    host = (urlparse(url).hostname or "").lower()
     return host in {"instagram.com", "www.instagram.com", "m.instagram.com"} and re.search(r"/(p|reel|reels|tv)/", url, re.I) is not None
 
 
-async def analyze_game_input(data: dict) -> dict:
-    workdir = Path(tempfile.mkdtemp(prefix="game-detector-"))
-    try:
-        text = data.get("text", "").strip()
-        source_types = set(data.get("source_types", []))
-        has_media = bool(data.get("urls") or data.get("video_attachments") or data.get("image_attachments"))
-        if text and not has_media and (not source_types or source_types == {"direct_text"}):
-            candidates = await _extract_direct_text(text)
-            if not candidates:
-                return {"status": "unknown", "message": "No explicit game names could be extracted from the text."}
-            corrected_candidates = []
-            for candidate in candidates[:MAX_GAMES]:
-                original = candidate["name"]
-                corrected = await _deepseek_correct_name(original)
-                item = dict(candidate)
-                item["detected_name"] = original
-                item["name"] = corrected
-                changed = normalize_name(original) != normalize_name(corrected)
-                item["correction"] = corrected if changed else None
-                item["ai_correction_confidence"] = _correction_confidence(original, corrected) if changed else 100.0
-                if changed:
-                    item["reason"] = f"DeepSeek spelling correction: {original} → {corrected}"
-                corrected_candidates.append(item)
-            games, unresolved = await _verify_and_enrich(corrected_candidates)
-            return _result(games, unresolved)
-
-        text_parts = []
-        if text:
-            text_parts.append(f"Discord text/caption:\n{text}")
-        media_files = []
-
-        for url in data.get("urls", [])[:5]:
-            try:
-                metadata, downloaded_media = await _download_url(url, workdir)
-                source_name = "Instagram" if _is_instagram_url(url) else "social media"
-                if metadata.get("title"):
-                    text_parts.append(f"{source_name} title:\n{metadata['title']}")
-                if metadata.get("description"):
-                    text_parts.append(f"{source_name} description/caption:\n{metadata['description'][:10000]}")
-                if metadata.get("uploader"):
-                    text_parts.append(f"{source_name} account:\n{metadata['uploader']}")
-                if metadata.get("entries"):
-                    for entry in metadata["entries"][:MAX_SOCIAL_MEDIA_ITEMS]:
-                        if not isinstance(entry, dict):
-                            continue
-                        entry_title = entry.get("title") or entry.get("description") or entry.get("alt_title")
-                        if entry_title:
-                            text_parts.append(f"{source_name} media item metadata:\n{str(entry_title)[:6000]}")
-                media_files.extend(downloaded_media)
-                log(f"Game detector | {source_name} media collected | url={url} | items={len(downloaded_media)}")
-            except Exception as exc:
-                log(f"Game detector URL error | {url} | {type(exc).__name__}: {exc}")
-
-        for item in data.get("video_attachments", []):
-            target = workdir / item["filename"]
-            await _download_attachment(item["url"], target)
-            media_files.append(target)
-
-        for item in data.get("image_attachments", []):
-            target = workdir / item["filename"]
-            await _download_attachment(item["url"], target)
-            media_files.append(target)
-
-        video_count = 0
-        image_count = 0
-        transcript_parts = []
-        ocr_parts = []
-        for index, media in enumerate(media_files[:MAX_SOCIAL_MEDIA_ITEMS], start=1):
-            suffix = media.suffix.lower()
-            if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}:
-                image_count += 1
-                ocr = await _ocr_image(media)
-                if ocr:
-                    ocr_parts.append(f"Media image #{index} OCR:\n{ocr[:6000]}")
-            else:
-                video_count += 1
-                transcript = await _transcribe(media, workdir, index)
-                if transcript:
-                    transcript_parts.append(f"Media video #{index} audio transcript:\n{transcript[:MAX_TRANSCRIPT_CHARS]}")
-                frame_ocr = await _ocr_video_frames(media, workdir, index)
-                if frame_ocr:
-                    ocr_parts.append(f"Media video #{index} frame OCR:\n{frame_ocr[:8000]}")
-
-        if transcript_parts:
-            text_parts.extend(transcript_parts)
-        if ocr_parts:
-            text_parts.extend(ocr_parts)
-
-        evidence = "\n\n---\n\n".join(text_parts).strip()
-        if not evidence:
-            return {"status": "unknown", "message": "No readable text or media was found."}
-        ai = await _ask_ollama(evidence)
-        candidates = _dedupe_candidates(ai.get("candidates", []) if isinstance(ai, dict) else [])
-        candidates = [c for c in candidates if str(c.get("evidence_type", "")).casefold() != "description"]
-        if not candidates:
-            return {"status": "unknown", "message": "I couldn't identify a game from the available evidence."}
-        games, unresolved = await _verify_and_enrich(candidates)
-        return _result(games, unresolved)
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
-
-
-def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
-    unresolved = unresolved or []
-    if not games:
-        message = "No identified game could be verified."
-        if unresolved:
-            message += " Please provide a direct game/store page link for each unresolved game."
-        return {"status": "needs_store_link" if unresolved else "unknown", "message": message, "game_count": 0, "games": [], "unresolved_games": unresolved, "requires_store_link": bool(unresolved)}
-    first = games[0]
-    message = ""
-    if unresolved:
-        names = ", ".join(item["name"] for item in unresolved)
-        message = f"{len(games)} game(s) verified. Could not verify: {names}. Please provide direct Steam or KeparDB store page links."
-    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": message}
-
-
 async def _extract_direct_text(text: str) -> list[dict]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    obvious = [re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", line).strip() for line in lines]
-    obvious = [x for x in obvious if x]
-    if len(obvious) == 1:
-        return [{"name": obvious[0], "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"}]
-    prompt = f"""Extract game titles EXPLICITLY WRITTEN in this text. Literal extraction only.
-Never infer a sequel, remake, edition, series entry, or related game.
-Never invent or replace a title. Preserve spelling exactly as supplied.
-Return every distinct explicit title, maximum {MAX_GAMES}.
-Return ONLY JSON: {{\"candidates\":[{{\"name\":\"exact text\",\"confidence\":100,\"reason\":\"explicitly present\",\"evidence_type\":\"direct_text\"}}]}}
-INPUT:\n{text[:30000]}"""
-    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "Literal extraction only. Never hallucinate game titles."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OLLAMA_URL, json=payload, timeout=aiohttp.ClientTimeout(total=180)) as response:
-                response.raise_for_status()
-                body = await response.json()
-        match = re.search(r"\{.*\}", body.get("message", {}).get("content", ""), re.DOTALL)
-        if match:
-            parsed = json.loads(match.group(0))
-            candidates = _dedupe_candidates(parsed.get("candidates", []))
-            source = [normalize_name(x) for x in obvious]
-            safe = [c for c in candidates if normalize_name(c["name"]) in source]
-            if safe:
-                return safe
-    except Exception as exc:
-        log(f"Game detector direct-text AI extraction error | {type(exc).__name__}: {exc}")
-    return [{"name": item, "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"} for item in _dedupe_text_lines(obvious)]
+    lines = [re.sub(r"^\s*(?:[*•\-–—]|\d+[.)])\s*", "", x).strip() for x in text.splitlines() if x.strip()]
+    if len(lines) == 1:
+        return [{"name": lines[0], "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"}]
+    return [{"name": x, "confidence": 100, "reason": "explicitly present in direct text", "evidence_type": "direct_text"} for x in _dedupe_text_lines(lines)]
 
 
 def _dedupe_text_lines(lines: list[str]) -> list[str]:
@@ -343,251 +147,92 @@ def _dedupe_text_lines(lines: list[str]) -> list[str]:
     return result[:MAX_GAMES]
 
 
-async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
-    verified, unresolved = [], []
-    for candidate in _dedupe_candidates(candidates):
-        original_name = str(candidate.get("name", "")).strip()
-        if not original_name:
-            continue
-        platform_info = await verify_game(original_name)
-        if platform_info is None:
-            unresolved.append({
-                "name": candidate.get("detected_name", original_name),
-                "detected_name": candidate.get("detected_name", original_name),
-                "confidence": float(candidate.get("confidence", 0)),
-                "reason": "TheGamesDB could not verify a console release for this title.",
-                "requires_store_link": True,
-            })
-            continue
-
-        steam_match = await _find_steam_match(original_name)
-        if steam_match:
-            item = dict(candidate)
-            item.update(steam_match)
-            item["detected_name"] = candidate.get("detected_name", original_name)
-            item["verified"] = True
-            item["verification_source"] = "steam"
-            item["library_url"] = item["steam_url"]
-            item["library_source"] = "steam"
-            item["correction"] = steam_match["name"] if normalize_name(item["detected_name"]) != normalize_name(steam_match["name"]) else None
-            if item.get("correction"):
-                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], steam_match["name"])
-                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {steam_match['name']}"
-                item["confidence"] = item["ai_correction_confidence"]
-            item["tgdb_game_id"] = platform_info.game_id
-            item["tgdb_url"] = platform_info.url
-            item["selected_platform"] = platform_info.selected_platform_name
-            item["console_platforms"] = platform_info.console_names
-            item["console_names"] = platform_info.console_names
-            item["pc_available"] = bool(platform_info.pc_platform)
-            item["has_console"] = True
-            verified.append(item)
-            continue
-        db_match = await find_game(original_name)
-        if db_match and _credible_name_match(original_name, db_match.name, KEPARDB_MATCH_THRESHOLD):
-            item = dict(candidate)
-            item["detected_name"] = candidate.get("detected_name", original_name)
-            item["name"] = db_match.name
-            item["kepargamedb_name"] = db_match.name if db_match.source == "kepardb" else None
-            item["kepargamedb_url"] = db_match.url if db_match.source == "kepardb" else None
-            item["library_url"] = db_match.url
-            item["library_source"] = db_match.source
-            item["verified"] = True
-            item["verification_source"] = db_match.source
-            item["tgdb_game_id"] = db_match.tgdb_game_id
-            item["tgdb_url"] = f"https://thegamesdb.net/game.php?id={db_match.tgdb_game_id}" if db_match.tgdb_game_id else None
-            item["selected_platform"] = db_match.selected_platform
-            item["console_platforms"] = list(db_match.console_platforms)
-            item["console_names"] = list(db_match.console_platforms)
-            item["pc_available"] = db_match.pc_available
-            item["has_console"] = bool(db_match.console_platforms)
-            item["correction"] = db_match.name if normalize_name(item["detected_name"]) != normalize_name(db_match.name) else None
-            if item.get("correction"):
-                item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], db_match.name)
-                item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {db_match.name}"
-                item["confidence"] = item["ai_correction_confidence"]
-            verified.append(item)
-            continue
-        item = dict(candidate)
-        item["detected_name"] = candidate.get("detected_name", original_name)
-        item["name"] = getattr(platform_info, "game_title", None) or getattr(platform_info, "name", None) or original_name
-        item["verified"] = True
-        item["verification_source"] = "thegamesdb"
-        item["library_url"] = platform_info.url
-        item["library_source"] = "thegamesdb"
-        item["tgdb_game_id"] = platform_info.game_id
-        item["tgdb_url"] = platform_info.url
-        item["selected_platform"] = platform_info.selected_platform_name
-        item["console_platforms"] = platform_info.console_names
-        item["console_names"] = platform_info.console_names
-        item["pc_available"] = bool(platform_info.pc_platform)
-        item["has_console"] = True
-        item["steam_verified"] = False
-        item["correction"] = item["name"] if normalize_name(item["detected_name"]) != normalize_name(item["name"]) else None
-        if item.get("correction"):
-            item["reason"] = f"TheGamesDB title normalization: {item['detected_name']} → {item['name']}"
-        else:
-            item["reason"] = "Verified by TheGamesDB with a console release."
-        verified.append(item)
-    return verified[:MAX_GAMES], unresolved
-
-
-async def _find_steam_match(query: str) -> dict | None:
-    try:
-        params = {"term": query, "cc": "ca", "l": "english"}
-        async with aiohttp.ClientSession(headers={"User-Agent": "KeparGameDetector/1.0"}) as session:
-            async with session.get("https://store.steampowered.com/search/", params=params, timeout=15) as response:
-                if response.status != 200:
-                    return None
-                html = await response.text()
-        soup = BeautifulSoup(html, "html.parser")
-        ranked = []
-        for row in soup.select("a.search_result_row[data-ds-appid]")[:20]:
-            title_node = row.select_one(".title")
-            appid = row.get("data-ds-appid")
-            if not title_node or not appid or not str(appid).isdigit():
-                continue
-            title = " ".join(title_node.stripped_strings).strip()
-            if not title:
-                continue
-            seq = _similarity(query, title)
-            word = _word_similarity(query, title)
-            token = _token_similarity(query, title)
-            ranked.append((seq, word, token, title, int(appid)))
-        if not ranked:
-            return None
-        seq, word, token, title, appid = max(ranked, key=lambda x: (x[0] * 0.45 + x[1] * 0.55, x[0], x[1]))
-        if not _credible_name_match(query, title, STEAM_MATCH_THRESHOLD):
-            log(f"Game verification | Steam rejected | query={query!r} best={title!r} similarity={seq:.3f} word={word:.3f} tokens={token:.3f}")
-            return None
-        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": (seq * 0.45 + word * 0.55) * 100}
-    except Exception as exc:
-        log(f"Steam verification error | {query} | {type(exc).__name__}: {exc}")
-        return None
-
-
 async def _download_url(url: str, workdir: Path) -> tuple[dict, list[Path]]:
-    """Download media from a source URL, including Instagram carousel images.
-
-    Instagram carousel posts are special: yt-dlp may discover the individual
-    entries but report ``No video formats found`` for image-only entries. That is
-    not a fatal error. We first collect all extractor metadata and then download
-    usable media. If normal media extraction yields nothing, the entries'
-    thumbnail URLs are downloaded as image evidence so every carousel slide can
-    still go through OCR.
-    """
+    """Download social media media without failing an Instagram carousel on image-only entries."""
     if not _tool("yt-dlp"):
         raise RuntimeError("yt-dlp is not installed")
 
     instagram = _is_instagram_url(url)
     output = str(workdir / ("instagram_%(playlist_index)03d.%(ext)s" if instagram else "source.%(ext)s"))
 
-    # Do not use --dump-single-json here. For Instagram carousels, one image-only
-    # entry can make yt-dlp exit non-zero even though other entries were found.
-    metadata_command = [
-        "yt-dlp", "--no-warnings", "--ignore-errors", "--dump-json",
-        "--yes-playlist" if instagram else "--no-playlist",
-        url,
-    ]
-    proc = await asyncio.to_thread(_run, metadata_command, 180)
-
-    metadata_entries: list[dict] = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line or not line.startswith("{"):
-            continue
+    # IMPORTANT: --dump-single-json can fail an entire Instagram carousel when
+    # one image entry has no video formats. Use one JSON object per entry and
+    # ignore individual extractor failures instead.
+    metadata_cmd = ["yt-dlp", "--no-warnings", "--ignore-errors", "--dump-json", "--yes-playlist" if instagram else "--no-playlist", url]
+    meta_proc = await asyncio.to_thread(_run, metadata_cmd, 180)
+    entries = []
+    for line in meta_proc.stdout.splitlines():
         try:
-            item = json.loads(line)
-            if isinstance(item, dict):
-                metadata_entries.append(item)
+            value = json.loads(line)
+            if isinstance(value, dict):
+                entries.append(value)
         except json.JSONDecodeError:
-            continue
+            pass
 
-    if not metadata_entries:
-        # A final metadata-only fallback. This can still expose playlist entries
-        # even when normal format extraction is unavailable.
-        fallback = [
-            "yt-dlp", "--no-warnings", "--ignore-errors", "--flat-playlist", "--dump-json",
-            "--yes-playlist" if instagram else "--no-playlist", url,
-        ]
-        fallback_proc = await asyncio.to_thread(_run, fallback, 180)
-        for line in fallback_proc.stdout.splitlines():
+    # Fallback metadata pass. Flat playlist discovery is useful when normal
+    # format extraction refuses image-only entries.
+    if not entries and instagram:
+        fallback = ["yt-dlp", "--no-warnings", "--ignore-errors", "--flat-playlist", "--dump-json", "--yes-playlist", url]
+        proc = await asyncio.to_thread(_run, fallback, 180)
+        for line in proc.stdout.splitlines():
             try:
-                item = json.loads(line.strip())
-                if isinstance(item, dict):
-                    metadata_entries.append(item)
-            except (json.JSONDecodeError, AttributeError):
-                continue
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    entries.append(value)
+            except json.JSONDecodeError:
+                pass
 
-    metadata: dict = {}
-    if metadata_entries:
-        root = metadata_entries[0]
-        metadata = {
-            "title": root.get("title"),
-            "description": root.get("description"),
-            "uploader": root.get("uploader") or root.get("channel"),
-            "entries": metadata_entries,
-        }
+    root = entries[0] if entries else {}
+    metadata = {
+        "title": root.get("title"),
+        "description": root.get("description"),
+        "uploader": root.get("uploader") or root.get("channel"),
+        "entries": entries,
+    }
 
-    # Normal media download. Ignore individual carousel failures; they are
-    # expected for image-only Instagram entries.
-    download_command = [
-        "yt-dlp", "--no-warnings", "--ignore-errors", "--restrict-filenames",
-        "--yes-playlist" if instagram else "--no-playlist",
-        "-o", output,
-    ]
+    download_cmd = ["yt-dlp", "--no-warnings", "--ignore-errors", "--restrict-filenames", "--yes-playlist" if instagram else "--no-playlist", "-o", output]
     if instagram:
-        download_command += ["--playlist-end", str(MAX_SOCIAL_MEDIA_ITEMS)]
-    download_command += [url]
-    download_proc = await asyncio.to_thread(_run, download_command, 360)
+        download_cmd += ["--playlist-end", str(MAX_SOCIAL_MEDIA_ITEMS)]
+    download_cmd.append(url)
+    dl_proc = await asyncio.to_thread(_run, download_cmd, 360)
 
-    files = []
-    for pattern in ("instagram_*", "source.*"):
-        files.extend(workdir.glob(pattern))
-    files = sorted(
-        [p for p in files if p.is_file() and p.suffix.lower() not in {".json", ".part", ".ytdl"}],
-        key=lambda p: (p.name, p.stat().st_mtime),
-    )
-
-    seen = set()
     media = []
-    for path in files:
-        resolved = path.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            media.append(path)
+    for pattern in ("instagram_*", "source.*"):
+        media.extend(p for p in workdir.glob(pattern) if p.is_file() and p.suffix.lower() not in {".json", ".part", ".ytdl"})
+    media = sorted(dict.fromkeys(media), key=lambda p: p.name)
 
-    # Instagram image carousel fallback. Download each entry's best thumbnail
-    # independently. This bypasses the "No video formats found" failure and gives
-    # OCR the actual visible image content instead of relying on captions.
-    if instagram and len(media) < min(MAX_SOCIAL_MEDIA_ITEMS, max(1, len(metadata_entries))):
+    # CRITICAL CAROUSEL FALLBACK:
+    # Image-only Instagram entries often log "No video formats found". Their
+    # thumbnail is still a real image and can be OCR'd. Download every entry's
+    # thumbnail independently so all carousel slides are analyzed.
+    if instagram:
+        existing = {p.resolve() for p in media}
         async with aiohttp.ClientSession(headers={"User-Agent": "KeparGameDetector/1.0"}) as session:
-            for index, entry in enumerate(metadata_entries[:MAX_SOCIAL_MEDIA_ITEMS], start=1):
-                thumb = entry.get("thumbnail") or entry.get("url")
-                if not thumb or not isinstance(thumb, str) or not thumb.startswith("http"):
+            for index, entry in enumerate(entries[:MAX_SOCIAL_MEDIA_ITEMS], start=1):
+                image_url = entry.get("thumbnail") or entry.get("url")
+                if not isinstance(image_url, str) or not image_url.startswith("http"):
                     continue
-                # Do not duplicate an already downloaded media URL when yt-dlp
-                # happened to expose the same resource as a normal format.
-                filename = workdir / f"instagram_carousel_{index:03d}.jpg"
+                target = workdir / f"instagram_carousel_{index:03d}.jpg"
                 try:
-                    async with session.get(thumb, timeout=aiohttp.ClientTimeout(total=45)) as response:
+                    async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=45)) as response:
                         response.raise_for_status()
                         content_type = (response.headers.get("Content-Type") or "").lower()
-                        if "image" not in content_type and not re.search(r"\.(jpg|jpeg|png|webp)(?:\?|$)", thumb, re.I):
+                        if "image" not in content_type and not re.search(r"\.(?:jpe?g|png|webp)(?:\?|$)", image_url, re.I):
                             continue
                         data = await response.read()
                     if data:
-                        filename.write_bytes(data)
-                        media.append(filename)
-                        log(f"Game detector Instagram carousel | image fallback downloaded | item={index}")
+                        target.write_bytes(data)
+                        if target.resolve() not in existing:
+                            media.append(target)
+                            existing.add(target.resolve())
+                            log(f"Game detector Instagram carousel | image fallback downloaded | item={index}")
                 except Exception as exc:
                     log(f"Game detector Instagram carousel image error | item={index} | {type(exc).__name__}: {exc}")
 
-    if not metadata_entries and not media:
-        error_text = (download_proc.stderr or proc.stderr or "unknown yt-dlp error").strip()
-        raise RuntimeError(error_text[-2000:])
+    if not entries and not media:
+        error = (dl_proc.stderr or meta_proc.stderr or "unknown yt-dlp error").strip()
+        raise RuntimeError(error[-2000:])
 
-    # Preserve entry order and cap the number of analyzed items.
     return metadata, media[:MAX_SOCIAL_MEDIA_ITEMS]
 
 
@@ -603,34 +248,162 @@ async def _download_attachment(url: str, target: Path) -> None:
                     file.write(chunk)
 
 
-def _tool_required(name: str):
-    if not _tool(name):
-        raise RuntimeError(f"Required tool not found: {name}")
+async def _transcribe(video: Path, workdir: Path, index: int = 1) -> str:
+    if not _tool("ffmpeg"):
+        return ""
+    audio = workdir / f"audio_{index}.wav"
+    proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)], 120)
+    if proc.returncode != 0 or not audio.exists():
+        return ""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return ""
+    model_name = os.getenv("WHISPER_MODEL", "small")
+    device = os.getenv("WHISPER_DEVICE", "auto")
+    compute = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+    def run_transcribe():
+        actual = "cuda" if device == "auto" else device
+        model = WhisperModel(model_name, device=actual, compute_type=compute)
+        segments, _ = model.transcribe(str(audio), vad_filter=True)
+        return " ".join(s.text.strip() for s in segments if s.text.strip())
+    try:
+        return await asyncio.to_thread(run_transcribe)
+    except Exception as exc:
+        log(f"Game detector transcription error | {type(exc).__name__}: {exc}")
+        return ""
 
 
-def _extract_yt_dlp_json_lines(stdout: str) -> list[dict]:
-    entries = []
-    for line in stdout.splitlines():
-        try:
-            value = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
+async def _ocr_image(image: Path) -> str:
+    try:
+        import pytesseract
+        from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+        def run_ocr():
+            img = Image.open(image).convert("RGB")
+            scale = 2 if max(img.size) < 1800 else 1
+            if scale > 1:
+                img = img.resize((img.width * scale, img.height * scale))
+            gray = ImageOps.grayscale(img)
+            gray = ImageEnhance.Contrast(gray).enhance(1.7).filter(ImageFilter.SHARPEN)
+            return "\n".join(pytesseract.image_to_string(gray, config=f"--psm {psm}") for psm in (6, 11))
+        return await asyncio.to_thread(run_ocr)
+    except Exception as exc:
+        log(f"Game detector OCR error | {image.name} | {type(exc).__name__}: {exc}")
+        return ""
+
+
+async def _ocr_video_frames(video: Path, workdir: Path, index: int) -> str:
+    if not _tool("ffmpeg"):
+        return ""
+    frame_dir = workdir / f"frames_{index}"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    # Spread frames through the full duration. This is intentionally not a
+    # first-frame shortcut because game UI/title cards may appear later.
+    duration_proc = await asyncio.to_thread(_run, ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(video)], 30) if _tool("ffprobe") else None
+    try:
+        duration = float(duration_proc.stdout.strip()) if duration_proc and duration_proc.returncode == 0 else 0.0
+    except ValueError:
+        duration = 0.0
+    count = 18
+    frames = []
+    if duration > 0:
+        for i in range(count):
+            ts = duration * i / max(1, count - 1)
+            output = frame_dir / f"frame_{i:03d}.jpg"
+            proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-ss", f"{ts:.3f}", "-i", str(video), "-frames:v", "1", "-vf", "scale=1600:-1", str(output)], 30)
+            if proc.returncode == 0 and output.exists():
+                frames.append(output)
+    else:
+        proc = await asyncio.to_thread(_run, ["ffmpeg", "-y", "-i", str(video), "-vf", "fps=1/2,scale=1600:-1", "-frames:v", str(count), str(frame_dir / "frame_%03d.jpg")], 120)
+        if proc.returncode == 0:
+            frames = sorted(frame_dir.glob("*.jpg"))
+    parts = []
+    for frame in frames:
+        text = await _ocr_image(frame)
+        if text.strip():
+            parts.append(f"{frame.name}:\n{text[:2500]}")
+    return "\n\n".join(parts)
+
+
+async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
+    verified, unresolved = [], []
+    for candidate in _dedupe_candidates(candidates):
+        original = str(candidate.get("name", "")).strip()
+        if not original:
             continue
-        if isinstance(value, dict):
-            entries.append(value)
-    return entries
+        platform = await verify_game(original)
+        if platform is None:
+            unresolved.append({"name": candidate.get("detected_name", original), "detected_name": candidate.get("detected_name", original), "confidence": float(candidate.get("confidence", 0)), "reason": "TheGamesDB could not verify a console release for this title.", "requires_store_link": True})
+            continue
+        steam = await _find_steam_match(original)
+        if steam:
+            item = dict(candidate)
+            item.update(steam)
+            item["detected_name"] = candidate.get("detected_name", original)
+            item["verified"] = True
+            item["verification_source"] = "steam"
+            item["library_url"] = item["steam_url"]
+            item["library_source"] = "steam"
+            item["tgdb_game_id"] = platform.game_id
+            item["tgdb_url"] = platform.url
+            item["selected_platform"] = platform.selected_platform_name
+            item["console_platforms"] = platform.console_names
+            item["console_names"] = platform.console_names
+            item["pc_available"] = bool(platform.pc_platform)
+            item["has_console"] = True
+            verified.append(item)
+            continue
+        db = await find_game(original)
+        if db and _credible_name_match(original, db.name, KEPARDB_MATCH_THRESHOLD):
+            item = dict(candidate)
+            item.update({"name": db.name, "detected_name": candidate.get("detected_name", original), "verified": True, "verification_source": db.source, "library_url": db.url, "library_source": db.source, "tgdb_game_id": db.tgdb_game_id, "tgdb_url": f"https://thegamesdb.net/game.php?id={db.tgdb_game_id}" if db.tgdb_game_id else None, "selected_platform": db.selected_platform, "console_platforms": list(db.console_platforms), "console_names": list(db.console_platforms), "pc_available": db.pc_available, "has_console": bool(db.console_platforms)})
+            verified.append(item)
+            continue
+        item = dict(candidate)
+        item.update({"detected_name": candidate.get("detected_name", original), "name": getattr(platform, "game_title", None) or getattr(platform, "name", None) or original, "verified": True, "verification_source": "thegamesdb", "library_url": platform.url, "library_source": "thegamesdb", "tgdb_game_id": platform.game_id, "tgdb_url": platform.url, "selected_platform": platform.selected_platform_name, "console_platforms": platform.console_names, "console_names": platform.console_names, "pc_available": bool(platform.pc_platform), "has_console": True, "steam_verified": False})
+        verified.append(item)
+    return verified[:MAX_GAMES], unresolved
 
 
-def _normalize_media_url(url: str) -> str:
-    return url.split("#", 1)[0].strip()
+async def _find_steam_match(query: str) -> dict | None:
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": "KeparGameDetector/1.0"}) as session:
+            async with session.get("https://store.steampowered.com/search/", params={"term": query, "cc": "ca", "l": "english"}, timeout=15) as response:
+                if response.status != 200:
+                    return None
+                html = await response.text()
+        soup = BeautifulSoup(html, "html.parser")
+        ranked = []
+        for row in soup.select("a.search_result_row[data-ds-appid]")[:20]:
+            node, appid = row.select_one(".title"), row.get("data-ds-appid")
+            if not node or not appid or not str(appid).isdigit():
+                continue
+            title = " ".join(node.stripped_strings).strip()
+            seq, word = _similarity(query, title), _word_similarity(query, title)
+            ranked.append((seq * .45 + word * .55, title, int(appid)))
+        if not ranked:
+            return None
+        score, title, appid = max(ranked)
+        if not _credible_name_match(query, title, STEAM_MATCH_THRESHOLD):
+            return None
+        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": score * 100}
+    except Exception as exc:
+        log(f"Steam verification error | {query} | {type(exc).__name__}: {exc}")
+        return None
 
 
-def _is_image_path(path: Path) -> bool:
-    return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
+    unresolved = unresolved or []
+    if not games:
+        message = "No identified game could be verified."
+        if unresolved:
+            message += " Please provide a direct game/store page link for each unresolved game."
+        return {"status": "needs_store_link" if unresolved else "unknown", "message": message, "game_count": 0, "games": [], "unresolved_games": unresolved, "requires_store_link": bool(unresolved)}
+    first = games[0]
+    return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": ""}
 
 
-def _is_video_path(path: Path) -> bool:
-    return path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
-
-
-# The remainder of the original analyzer helpers are intentionally kept below.
-# They are loaded from the existing implementation in this file by the runtime.
+# Compatibility helper for any older code importing the original analyzer.
+async def analyze_game_input(data: dict) -> dict:
+    from processors.game_media_analyzer import analyze_game_input as evidence_analyzer
+    return await evidence_analyzer(data)
