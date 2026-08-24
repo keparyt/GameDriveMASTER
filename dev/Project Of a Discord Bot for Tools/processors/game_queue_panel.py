@@ -2,7 +2,9 @@ import asyncio
 import json
 from pathlib import Path
 
-PANEL_STATE_FILE = Path("data/game_queue_panel.json")
+from config import QUEUE_PANEL_STATE_FILE
+
+PANEL_STATE_FILE = Path(QUEUE_PANEL_STATE_FILE)
 _lock = asyncio.Lock()
 
 
