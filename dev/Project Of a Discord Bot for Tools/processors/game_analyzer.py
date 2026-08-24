@@ -148,9 +148,6 @@ async def _extract_direct_text(text: str) -> list[dict]:
 async def _download_url(url: str, workdir: Path) -> tuple[dict, list[Path]]:
     """Download media. Instagram is deliberately NOT sent through yt-dlp."""
     if _is_instagram_url(url):
-        # Instagram carousels are a structured post containing independent
-        # image/video children. Instaloader handles this correctly and avoids
-        # yt-dlp's misleading "No video formats found" errors for image slides.
         try:
             return await scrape_post(url, workdir)
         except Exception as exc:
@@ -219,18 +216,57 @@ async def _transcribe(video: Path, workdir: Path, index: int = 1) -> str:
 
 
 async def _ocr_image(image: Path) -> str:
+    """OCR an image without requiring the external Tesseract executable.
+
+    RapidOCR is preferred because pytesseract is only a Python wrapper around
+    the separately installed tesseract.exe. Tesseract remains an optional
+    fallback for environments that already have it installed.
+    """
     try:
-        import pytesseract
         from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-        def run_ocr():
+
+        def prepare_image():
+            with Image.open(image) as source:
+                source.verify()
             img = Image.open(image).convert("RGB")
             scale = 2 if max(img.size) < 1800 else 1
             if scale > 1:
                 img = img.resize((img.width * scale, img.height * scale))
             gray = ImageOps.grayscale(img)
-            gray = ImageEnhance.Contrast(gray).enhance(1.7).filter(ImageFilter.SHARPEN)
-            return "\n".join(pytesseract.image_to_string(gray, config=f"--psm {psm}") for psm in (6, 11))
-        return await asyncio.to_thread(run_ocr)
+            return ImageEnhance.Contrast(gray).enhance(1.7).filter(ImageFilter.SHARPEN)
+
+        prepared = await asyncio.to_thread(prepare_image)
+
+        # Preferred OCR engine: no system executable required.
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            engine = RapidOCR()
+            result, _ = await asyncio.to_thread(engine, prepared)
+            if result:
+                texts = []
+                for item in result:
+                    try:
+                        text = str(item[1]).strip()
+                    except (IndexError, TypeError):
+                        continue
+                    if text:
+                        texts.append(text)
+                if texts:
+                    return "\n".join(dict.fromkeys(texts))
+        except Exception as rapid_exc:
+            log(f"Game detector RapidOCR fallback | {image.name} | {type(rapid_exc).__name__}: {rapid_exc}")
+
+        # Optional legacy fallback.
+        try:
+            import pytesseract
+            return "\n".join(
+                pytesseract.image_to_string(prepared, config=f"--psm {psm}")
+                for psm in (6, 11)
+            )
+        except Exception as tess_exc:
+            if type(tess_exc).__name__ != "TesseractNotFoundError":
+                log(f"Game detector Tesseract fallback | {image.name} | {type(tess_exc).__name__}: {tess_exc}")
+            return ""
     except Exception as exc:
         log(f"Game detector OCR error | {image.name} | {type(exc).__name__}: {exc}")
         return ""
@@ -314,8 +350,6 @@ def _result(games: list[dict], unresolved: list[dict] | None = None) -> dict:
     return {"status": "identified" if not unresolved else "partial", "game_count": len(games), "games": games, "unresolved_games": unresolved, "requires_store_link": bool(unresolved), "game_name": first.get("name"), "confidence": float(first.get("confidence", 0)), "steam_url": first.get("steam_url"), "reason": first.get("reason", "Identification from supplied content."), "candidates": games, "message": ""}
 
 
-# Compatibility helper for older imports. The evidence-first analyzer owns the
-# actual OCR/visual-analysis pipeline.
 async def analyze_game_input(data: dict) -> dict:
     from processors.game_media_analyzer import analyze_game_input as evidence_analyzer
     return await evidence_analyzer(data)
