@@ -38,13 +38,18 @@ async def list_queue() -> list[dict]:
         return _load(QUEUE_FILE)
 
 
-async def add_games(games: list[dict]) -> list[dict]:
+async def add_games(
+    games: list[dict],
+    requester_id: int | None = None,
+    requester_name: str | None = None,
+) -> list[dict]:
     async with _lock:
         queue = _load(QUEUE_FILE)
         history = _load(HISTORY_FILE)
         existing = {str(item.get("name", "")).casefold().strip() for item in queue}
         added = []
         next_id = _next_id(queue, history)
+        requested_at = datetime.now(timezone.utc).isoformat()
 
         for game in games:
             key = str(game.get("name", "")).casefold().strip()
@@ -60,6 +65,9 @@ async def add_games(games: list[dict]) -> list[dict]:
                 "steam_appid": game.get("steam_appid"),
                 "confidence": game.get("confidence", 0),
                 "reason": game.get("reason", ""),
+                "requester_id": requester_id,
+                "requester_name": requester_name or (str(requester_id) if requester_id else "Unknown"),
+                "requested_at": requested_at,
             }
             queue.append(item)
             added.append(item)
