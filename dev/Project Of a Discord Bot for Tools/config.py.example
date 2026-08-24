@@ -4,6 +4,8 @@
 # config.py is ignored by git.
 # ============================================================
 
+import os
+
 # Discord
 TOKEN = ""
 MASTER_ID = 0
@@ -21,9 +23,11 @@ DM_PARSE_PROMPT_TIMEOUT = 24 * 60 * 60
 MAX_SELECTION_GAMES = 25
 
 # Local AI / Ollama
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-OLLAMA_MODEL = "deepseek-r1:7b"
-OLLAMA_VISION_MODEL = ""
+# Docker Compose sets OLLAMA_URL to host.docker.internal so the
+# container can use Ollama running on the Windows host.
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "")
 OLLAMA_TIMEOUT_SECONDS = 180
 OLLAMA_VISION_TIMEOUT_SECONDS = 120
 OLLAMA_TEMPERATURE = 0
@@ -98,8 +102,8 @@ QUEUE_PANEL_STATE_FILE = "data/game_queue_panel.json"
 # LAN connection service
 LAN_WEB_HOST = "0.0.0.0"
 LAN_WEB_PORT = 9999
-LAN_BASE_URL = "http://192.168.28.7:9999"
-LAN_NETWORK = "192.168.28.0/24"
+LAN_BASE_URL = os.getenv("LAN_BASE_URL", "http://192.168.28.7:9999")
+LAN_NETWORK = os.getenv("LAN_NETWORK", "192.168.28.0/24")
 HOME_ROLE_ID = 0
 LAN_CONNECTION_TIMEOUT = 600
 LAN_PING_INTERVAL = 300
