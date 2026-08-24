@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -11,59 +10,80 @@ from pathlib import Path
 
 import aiohttp
 
+from config import (
+    DESCRIPTION_MAX_CHARS,
+    FFMPEG_BINARY,
+    FFPROBE_BINARY,
+    IMAGE_EXTENSIONS,
+    MAX_EVIDENCE_CHARS,
+    MAX_GAMES,
+    MAX_OCR_CHARS_PER_FRAME,
+    MAX_SOCIAL_MEDIA_ITEMS,
+    MAX_SOURCE_URLS,
+    MAX_TRANSCRIPT_CHARS,
+    MEDIA_CONCURRENCY,
+    OLLAMA_MODEL,
+    OLLAMA_TIMEOUT_SECONDS,
+    OLLAMA_TEMPERATURE,
+    OLLAMA_URL,
+    OLLAMA_USER_AGENT,
+    OLLAMA_VISION_MODEL,
+    OLLAMA_VISION_TIMEOUT_SECONDS,
+    VIDEO_EXTENSIONS,
+    VIDEO_FRAME_COUNT,
+    VISION_IMAGE_LIMIT,
+)
 from processors.game_analyzer import (
-    MAX_GAMES, MAX_SOCIAL_MEDIA_ITEMS, MAX_TRANSCRIPT_CHARS,
-    _deepseek_correct_name, _dedupe_candidates, _download_attachment,
-    _download_url, _extract_direct_text, _result, _run, _tool, _transcribe,
+    _dedupe_candidates,
+    _download_attachment,
+    _download_url,
+    _extract_direct_text,
+    _result,
+    _run,
+    _tool,
+    _transcribe,
     _verify_and_enrich,
 )
 from processors.robust_ocr import ocr_image as _ocr_image
 from utils.helper import log
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
-OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "").strip()
-VIDEO_FRAME_COUNT = max(4, int(os.getenv("GAME_OCR_FRAME_COUNT", "10")))
-MAX_OCR_CHARS_PER_FRAME = 2500
-DESCRIPTION_MAX_CHARS = 6000
-MEDIA_CONCURRENCY = max(1, int(os.getenv("GAME_MEDIA_CONCURRENCY", "3")))
-URL_CONCURRENCY = max(1, int(os.getenv("GAME_URL_CONCURRENCY", "3")))
-VISION_IMAGE_LIMIT = max(1, int(os.getenv("GAME_VISION_IMAGE_LIMIT", "6")))
-
 
 def _media_type(path: Path) -> str:
-    return "image" if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"} else "video"
+    return "image" if path.suffix.lower() in IMAGE_EXTENSIONS else "video"
 
 
 def _video_duration(video: Path) -> float:
-    if not _tool("ffprobe"):
+    if not _tool(FFPROBE_BINARY):
         return 0.0
     try:
-        proc = _run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(video)], 30)
+        proc = _run([
+            FFPROBE_BINARY, "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(video)
+        ], 30)
         return float(proc.stdout.strip()) if proc.returncode == 0 else 0.0
     except Exception:
         return 0.0
 
 
 async def _ocr_video_full(video: Path, workdir: Path, index: int) -> tuple[str, list[Path]]:
-    if not _tool("ffmpeg"):
+    if not _tool(FFMPEG_BINARY):
         return "", []
     frame_dir = workdir / f"frames_{index}"
     frame_dir.mkdir(parents=True, exist_ok=True)
     duration = await asyncio.to_thread(_video_duration, video)
-    count = VIDEO_FRAME_COUNT
+    count = max(1, VIDEO_FRAME_COUNT)
     if duration > 180:
         count = min(count, 8)
     elif duration < 20:
         count = min(count, 6)
 
-    # One ffmpeg pass is much faster than spawning ffmpeg once per timestamp.
     output_pattern = frame_dir / "frame_%03d.jpg"
     if duration > 0:
         fps = count / max(duration, 1.0)
-        args = ["ffmpeg", "-y", "-i", str(video), "-vf", f"fps={fps:.6f},scale=1600:-1", "-frames:v", str(count), str(output_pattern)]
+        args = [FFMPEG_BINARY, "-y", "-i", str(video), "-vf", f"fps={fps:.6f},scale=1600:-1", "-frames:v", str(count), str(output_pattern)]
     else:
-        args = ["ffmpeg", "-y", "-i", str(video), "-vf", "fps=1/2,scale=1600:-1", "-frames:v", str(count), str(output_pattern)]
+        args = [FFMPEG_BINARY, "-y", "-i", str(video), "-vf", "fps=1/2,scale=1600:-1", "-frames:v", str(count), str(output_pattern)]
+
     proc = await asyncio.to_thread(_run, args, 120)
     frames = sorted(frame_dir.glob("*.jpg")) if proc.returncode == 0 else []
     log(f"Game detector video OCR frames | {video.name} | {len(frames)} frames")
@@ -71,9 +91,11 @@ async def _ocr_video_full(video: Path, workdir: Path, index: int) -> tuple[str, 
         return "", []
 
     sem = asyncio.Semaphore(MEDIA_CONCURRENCY)
+
     async def one(frame: Path):
         async with sem:
             return frame, await _ocr_image(frame)
+
     results = await asyncio.gather(*(one(frame) for frame in frames), return_exceptions=True)
     parts = []
     for item in results:
@@ -98,10 +120,20 @@ async def _vision_frame_analysis(frames: list[Path]) -> str:
             pass
     if not images:
         return ""
-    payload = {"model": OLLAMA_VISION_MODEL, "stream": False, "messages": [{"role": "user", "content": "Identify only concrete game evidence: logos, title screens, HUD, menus, named characters, maps or unmistakable gameplay. Do not guess from generic visuals. Return concise evidence.", "images": images}], "options": {"temperature": 0}}
+
+    payload = {
+        "model": OLLAMA_VISION_MODEL,
+        "stream": False,
+        "messages": [{
+            "role": "user",
+            "content": "Identify only concrete game evidence: logos, title screens, HUD, menus, named characters, maps or unmistakable gameplay. Do not guess from generic visuals. Return concise evidence.",
+            "images": images,
+        }],
+        "options": {"temperature": OLLAMA_TEMPERATURE},
+    }
     try:
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        timeout = aiohttp.ClientTimeout(total=OLLAMA_VISION_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(headers={"User-Agent": OLLAMA_USER_AGENT}, timeout=timeout) as session:
             async with session.post(OLLAMA_URL, json=payload) as response:
                 response.raise_for_status()
                 body = await response.json()
@@ -130,11 +162,19 @@ A title appearing only in a description is not enough. OCR is noisy, so normaliz
 
 Return ONLY JSON: {{"candidates":[{{"name":"Game title","confidence":90,"reason":"short evidence","evidence_type":"ocr"}}]}}
 
-EVIDENCE:\n{evidence[:50000]}'''
-    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict game-identification engine. Prefer actual media over captions and never hallucinate titles."}, {"role": "user", "content": prompt}], "options": {"temperature": 0}}
+EVIDENCE:\n{evidence[:MAX_EVIDENCE_CHARS]}'''
+    payload = {
+        "model": OLLAMA_MODEL,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": "You are a strict game-identification engine. Prefer actual media over captions and never hallucinate titles."},
+            {"role": "user", "content": prompt},
+        ],
+        "options": {"temperature": OLLAMA_TEMPERATURE},
+    }
     try:
-        timeout = aiohttp.ClientTimeout(total=180)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        timeout = aiohttp.ClientTimeout(total=OLLAMA_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(headers={"User-Agent": OLLAMA_USER_AGENT}, timeout=timeout) as session:
             async with session.post(OLLAMA_URL, json=payload) as response:
                 response.raise_for_status()
                 body = await response.json()
@@ -167,7 +207,6 @@ async def _analyze_one_media(index: int, media: Path, workdir: Path, sem: asynci
                 evidence.append(f"IMAGE #{index} VISUAL ANALYSIS:\n{visual[:5000]}")
             return evidence
 
-        # Audio and frame extraction can overlap.
         transcript_task = asyncio.create_task(_transcribe(media, workdir, index))
         frame_task = asyncio.create_task(_ocr_video_full(media, workdir, index))
         transcript, frame_result = await asyncio.gather(transcript_task, frame_task)
@@ -190,12 +229,11 @@ async def analyze_game_input(data: dict) -> dict:
         has_media = bool(data.get("urls") or data.get("video_attachments") or data.get("image_attachments"))
         if text and not has_media and not data.get("source_types"):
             candidates = await _extract_direct_text(text)
-            corrected = await asyncio.gather(*(_deepseek_correct_name(str(c.get("name", "")).strip()) for c in candidates[:MAX_GAMES]))
             prepared = []
-            for candidate, name in zip(candidates[:MAX_GAMES], corrected):
+            for candidate in candidates[:MAX_GAMES]:
                 original = str(candidate.get("name", "")).strip()
                 item = dict(candidate)
-                item.update({"detected_name": original, "name": name, "correction": name if name.casefold() != original.casefold() else None})
+                item.update({"detected_name": original, "name": original, "correction": None})
                 prepared.append(item)
             games, unresolved = await _verify_and_enrich(prepared)
             return _result(games, unresolved)
@@ -203,9 +241,10 @@ async def analyze_game_input(data: dict) -> dict:
         media_files, metadata, descriptions = [], [], []
         if text:
             metadata.append(f"Discord message text/context:\n{text[:10000]}")
-        urls = list(dict.fromkeys(data.get("urls", [])))[:10]
+        urls = list(dict.fromkeys(data.get("urls", [])))[:MAX_SOURCE_URLS]
         log(f"Game detector sources | urls={len(urls)} image_attachments={len(data.get('image_attachments', []))} video_attachments={len(data.get('video_attachments', []))}")
-        url_sem = asyncio.Semaphore(URL_CONCURRENCY)
+        url_sem = asyncio.Semaphore(max(1, MEDIA_CONCURRENCY))
+
         async def extract(url):
             async with url_sem:
                 try:
@@ -214,26 +253,33 @@ async def analyze_game_input(data: dict) -> dict:
                 except Exception as exc:
                     log(f"Game detector media URL error | {url} | {type(exc).__name__}: {exc}")
                     return url, ({}, [])
+
         for _, result in await asyncio.gather(*(extract(url) for url in urls)):
             info, downloaded = result
             media_files.extend(downloaded)
-            if info.get("title"): metadata.append(f"Source title:\n{str(info['title'])[:6000]}")
-            if info.get("uploader"): metadata.append(f"Source uploader/account:\n{str(info['uploader'])[:3000]}")
-            if info.get("description"): descriptions.append(f"Source description/caption:\n{str(info['description'])[:DESCRIPTION_MAX_CHARS]}")
+            if info.get("title"):
+                metadata.append(f"Source title:\n{str(info['title'])[:6000]}")
+            if info.get("uploader"):
+                metadata.append(f"Source uploader/account:\n{str(info['uploader'])[:3000]}")
+            if info.get("description"):
+                descriptions.append(f"Source description/caption:\n{str(info['description'])[:DESCRIPTION_MAX_CHARS]}")
             for entry in info.get("entries", [])[:MAX_SOCIAL_MEDIA_ITEMS]:
                 if isinstance(entry, dict):
-                    if entry.get("title"): metadata.append(f"Media item title:\n{str(entry['title'])[:4000]}")
-                    if entry.get("description"): descriptions.append(f"Media item description:\n{str(entry['description'])[:DESCRIPTION_MAX_CHARS]}")
+                    if entry.get("title"):
+                        metadata.append(f"Media item title:\n{str(entry['title'])[:4000]}")
+                    if entry.get("description"):
+                        descriptions.append(f"Media item description:\n{str(entry['description'])[:DESCRIPTION_MAX_CHARS]}")
 
         async def attachment(item):
             target = workdir / item["filename"]
             await _download_attachment(item["url"], target)
             return target
+
         attachments = list(data.get("video_attachments", [])) + list(data.get("image_attachments", []))
         if attachments:
-            media_files.extend(await asyncio.gather(*(attachment(item) for item in attachments)))
+            results = await asyncio.gather(*(attachment(item) for item in attachments), return_exceptions=True)
+            media_files.extend(x for x in results if isinstance(x, Path))
 
-        # Deduplicate paths before expensive processing.
         media_files = list(dict.fromkeys(media_files))[:MAX_SOCIAL_MEDIA_ITEMS]
         log(f"Game detector media ready | count={len(media_files)}")
         if not media_files:
