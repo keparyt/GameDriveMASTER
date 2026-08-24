@@ -419,7 +419,7 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
         # mandatory gate: console-only titles such as inFAMOUS must be accepted.
         item = dict(candidate)
         item["detected_name"] = candidate.get("detected_name", original_name)
-        item["name"] = platform_info.title or original_name
+        item["name"] = getattr(platform_info, "game_title", None) or getattr(platform_info, "name", None) or original_name
         item["verified"] = True
         item["verification_source"] = "thegamesdb"
         item["library_url"] = platform_info.url
