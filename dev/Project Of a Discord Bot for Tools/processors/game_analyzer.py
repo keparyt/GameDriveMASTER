@@ -64,18 +64,55 @@ def _token_similarity(a: str, b: str) -> float:
     return len(at & bt) / len(at | bt)
 
 
+def _word_similarity(a: str, b: str) -> float:
+    """Compare words individually so small typos don't fail an otherwise obvious title match."""
+    import difflib
+    aw = normalize_name(a).split()
+    bw = normalize_name(b).split()
+    if not aw or not bw or abs(len(aw) - len(bw)) > 1:
+        return 0.0
+    used = set()
+    scores = []
+    for word in aw:
+        best = 0.0
+        best_index = None
+        for i, other in enumerate(bw):
+            if i in used:
+                continue
+            score = difflib.SequenceMatcher(None, word, other).ratio()
+            if score > best:
+                best = score
+                best_index = i
+        if best_index is not None:
+            used.add(best_index)
+        scores.append(best)
+    return sum(scores) / len(scores) if scores else 0.0
+
+
 def _credible_name_match(query: str, title: str, threshold: float) -> bool:
+    """Strict enough to reject unrelated Steam search results, but tolerant of normal typos."""
     q = normalize_name(query)
     t = normalize_name(title)
     if not q or not t:
         return False
     if q == t:
         return True
+
+    sequence = _similarity(query, title)
+    word = _word_similarity(query, title)
     qt = q.split()
     tt = t.split()
-    if len(qt) == 1:
-        return len(tt) == 1 and _similarity(q, t) >= 0.96
-    return _similarity(q, t) >= threshold and _token_similarity(q, t) >= 0.60
+
+    # For multi-word titles, a typo such as 'hello neigbour' should match
+    # 'hello neighbor' even though the token sets are technically different.
+    if len(qt) >= 2 and len(tt) >= 2:
+        return sequence >= 0.82 and word >= 0.82
+
+    # Single-word corrections must be very close to avoid false positives.
+    if len(qt) == 1 and len(tt) == 1:
+        return sequence >= 0.93
+
+    return sequence >= threshold and word >= 0.82
 
 
 async def analyze_game_input(data: dict) -> dict:
@@ -243,15 +280,16 @@ async def _find_steam_match(query: str) -> dict | None:
             if not title:
                 continue
             seq = _similarity(query, title)
-            tok = _token_similarity(query, title)
-            ranked.append((seq, tok, title, int(appid)))
+            word = _word_similarity(query, title)
+            token = _token_similarity(query, title)
+            ranked.append((seq, word, token, title, int(appid)))
         if not ranked:
             return None
-        seq, tok, title, appid = max(ranked, key=lambda x: (x[0] * 0.7 + x[1] * 0.3, x[0], x[1]))
+        seq, word, token, title, appid = max(ranked, key=lambda x: (x[0] * 0.45 + x[1] * 0.55, x[0], x[1]))
         if not _credible_name_match(query, title, STEAM_MATCH_THRESHOLD):
-            log(f"Game verification | Steam rejected | query={query!r} best={title!r} similarity={seq:.3f} tokens={tok:.3f}")
+            log(f"Game verification | Steam rejected | query={query!r} best={title!r} similarity={seq:.3f} word={word:.3f} tokens={token:.3f}")
             return None
-        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": (seq * 0.7 + tok * 0.3) * 100}
+        return {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "steam_verified": True, "confidence": (seq * 0.45 + word * 0.55) * 100}
     except Exception as exc:
         log(f"Steam verification error | {query} | {type(exc).__name__}: {exc}")
         return None
