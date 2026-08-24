@@ -12,6 +12,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from processors.game_db import find_game, normalize_name
+from processors.thegamesdb import verify_game
 from utils.helper import log
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
@@ -351,6 +352,20 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
         original_name = str(candidate.get("name", "")).strip()
         if not original_name:
             continue
+        # Platform gate: a game must exist on a real console. When PC exists,
+        # PC is always the selected/canonical version, regardless of whether the
+        # PC storefront is Steam, Epic, Battle.net, etc.
+        platform_info = await verify_game(original_name)
+        if platform_info is None:
+            unresolved.append({
+                "name": candidate.get("detected_name", original_name),
+                "detected_name": candidate.get("detected_name", original_name),
+                "confidence": float(candidate.get("confidence", 0)),
+                "reason": "TheGamesDB could not verify a console release for this title.",
+                "requires_store_link": True,
+            })
+            continue
+
         steam_match = await _find_steam_match(original_name)
         if steam_match:
             item = dict(candidate)
@@ -365,6 +380,13 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
                 item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], steam_match["name"])
                 item["reason"] = f"DeepSeek spelling correction: {item['detected_name']} → {steam_match['name']}"
                 item["confidence"] = item["ai_correction_confidence"]
+            item["tgdb_game_id"] = platform_info.game_id
+            item["tgdb_url"] = platform_info.url
+            item["selected_platform"] = platform_info.selected_platform_name
+            item["console_platforms"] = platform_info.console_names
+            item["console_names"] = platform_info.console_names
+            item["pc_available"] = bool(platform_info.pc_platform)
+            item["has_console"] = True
             verified.append(item)
             continue
         db_match = await find_game(original_name)
@@ -372,12 +394,19 @@ async def _verify_and_enrich(candidates: list[dict]) -> tuple[list[dict], list[d
             item = dict(candidate)
             item["detected_name"] = candidate.get("detected_name", original_name)
             item["name"] = db_match.name
-            item["kepargamedb_name"] = db_match.name
-            item["kepargamedb_url"] = db_match.url
+            item["kepargamedb_name"] = db_match.name if db_match.source == "kepardb" else None
+            item["kepargamedb_url"] = db_match.url if db_match.source == "kepardb" else None
             item["library_url"] = db_match.url
-            item["library_source"] = "kepardb"
+            item["library_source"] = db_match.source
             item["verified"] = True
-            item["verification_source"] = "kepardb"
+            item["verification_source"] = db_match.source
+            item["tgdb_game_id"] = db_match.tgdb_game_id
+            item["tgdb_url"] = f"https://thegamesdb.net/game.php?id={db_match.tgdb_game_id}" if db_match.tgdb_game_id else None
+            item["selected_platform"] = db_match.selected_platform
+            item["console_platforms"] = list(db_match.console_platforms)
+            item["console_names"] = list(db_match.console_platforms)
+            item["pc_available"] = db_match.pc_available
+            item["has_console"] = bool(db_match.console_platforms)
             item["correction"] = db_match.name if normalize_name(item["detected_name"]) != normalize_name(db_match.name) else None
             if item.get("correction"):
                 item["ai_correction_confidence"] = _correction_confidence(item["detected_name"], db_match.name)
