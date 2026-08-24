@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from config import (
     TOKEN,
+    COMMAND_PREFIX,
     LAN_WEB_HOST,
     LAN_WEB_PORT,
     LAN_BASE_URL,
@@ -13,17 +14,18 @@ from config import (
     HOME_ROLE_ID,
     LAN_CONNECTION_TIMEOUT,
     MASTER_ID,
+    LOG_LEVEL,
+    LOG_FORMAT,
+    LOG_DATE_FORMAT,
 )
-
 from server.connections import ConnectionManager
 from server.web import LANWebServer
 from utils.helper import log
 
-
 logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    level=getattr(logging, str(LOG_LEVEL).upper(), logging.INFO),
+    format=LOG_FORMAT,
+    datefmt=LOG_DATE_FORMAT,
 )
 
 
@@ -31,11 +33,7 @@ class Bot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-
-        super().__init__(
-            command_prefix="!",
-            intents=intents,
-        )
+        super().__init__(command_prefix=COMMAND_PREFIX, intents=intents)
 
         self.master_id = MASTER_ID
         self.connection_manager = ConnectionManager(
@@ -45,15 +43,10 @@ class Bot(commands.Bot):
             timeout=LAN_CONNECTION_TIMEOUT,
         )
         self.lan_base_url = LAN_BASE_URL
-        self.lan_web = LANWebServer(
-            self.connection_manager,
-            LAN_WEB_HOST,
-            LAN_WEB_PORT,
-        )
+        self.lan_web = LANWebServer(self.connection_manager, LAN_WEB_HOST, LAN_WEB_PORT)
 
     async def setup_hook(self):
         log("Loading commands...")
-
         await self.load_extension("commands.connection")
         await self.load_extension("commands.games")
 
@@ -61,12 +54,10 @@ class Bot(commands.Bot):
         await self.load_extension("events.on_ready")
         await self.load_extension("events.on_message")
         await self.load_extension("events.dm_game_prompt")
-
         log("All extensions loaded.")
 
         await self.lan_web.start()
         self.connection_manager.start_cleanup()
-
         synced = await self.tree.sync()
         log(f"Synced {len(synced)} slash command(s).")
 
