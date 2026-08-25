@@ -95,39 +95,109 @@ class GameSelectionView(discord.ui.View):
             self.add_item(self.select)
 
     async def select_games(self, interaction: discord.Interaction):
-        selected_indices = {int(value) for value in self.select.values}
-        selected = [self.games[index] for index in selected_indices]
-        already_installed = [g for g in selected if normalize_game_name(str(g.get("name", ""))) in self.installed_names]
-        to_queue = [g for g in selected if g not in already_installed]
+        """Handle a selection without letting the 3-second Discord interaction window expire.
 
-        added, blocked = await add_games(to_queue, requester_id=interaction.user.id, requester_name=interaction.user.display_name)
-        await self.cog.refresh_queue_panel()
-        self.resolved_indices.update(selected_indices)
+        add_games() and refresh_queue_panel() can perform database/history/network work and
+        therefore may take longer than Discord's initial interaction-response deadline.
+        Always acknowledge the component interaction immediately, then use the webhook
+        follow-up for the private result. This also lets us delete the private selection
+        panel after the queue has been updated.
+        """
+        try:
+            # MUST happen before any potentially slow work. Using defer() prevents
+            # Discord error 10062 (Unknown interaction) caused by the 3-second deadline.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.NotFound as exc:
+            log(f"Game selection interaction expired before defer | user={interaction.user.id} | {type(exc).__name__}: {exc}")
+            return
+        except discord.HTTPException as exc:
+            log(f"Game selection interaction defer failed | user={interaction.user.id} | {type(exc).__name__}: {exc}")
+            return
 
-        lines = []
-        if added:
-            lines.append("### Added to download queue\n" + "\n".join(f"• **{g.get('name', 'Unknown game')}**" for g in added))
-        if blocked:
-            lines.append("### 🚫 Not added\n" + "\n".join(
-                f"• **{g.get('attempted_name') or g.get('name') or 'Unknown game'}** — {g.get('reason') or 'This game is blacklisted.'}"
-                for g in blocked
-            ))
-        if already_installed:
-            lines.append("### Already installed\n" + "\n".join(f"• **{g.get('name', 'Unknown game')}**" for g in already_installed))
-        if not lines:
-            lines.append("No changes were required; the selected games are already handled.")
+        try:
+            selected_indices = {int(value) for value in self.select.values}
+            selected = [self.games[index] for index in selected_indices]
+            already_installed = [
+                g for g in selected
+                if normalize_game_name(str(g.get("name", ""))) in self.installed_names
+            ]
+            to_queue = [g for g in selected if g not in already_installed]
 
-        all_resolved = len(self.resolved_indices) >= len(self.games)
-        if all_resolved:
-            lines.append("\n**✓ All detected games are resolved.** This private panel will now close.")
+            added, blocked = await add_games(
+                to_queue,
+                requester_id=interaction.user.id,
+                requester_name=interaction.user.display_name,
+            )
+            await self.cog.refresh_queue_panel()
+            self.resolved_indices.update(selected_indices)
 
-        await interaction.response.send_message(
-            embed=panel("Selection updated", "\n\n".join(lines), color=SUCCESS if added else WARNING, footer="Private game selection"),
-            ephemeral=True,
-        )
-        if all_resolved:
-            self.stop()
-            await _delete_message(interaction.message)
+            lines = []
+            if added:
+                lines.append(
+                    "### Added to download queue\n"
+                    + "\n".join(f"• **{g.get('name', 'Unknown game')}**" for g in added)
+                )
+            if blocked:
+                lines.append(
+                    "### 🚫 Not added\n"
+                    + "\n".join(
+                        f"• **{g.get('attempted_name') or g.get('name') or 'Unknown game'}** — "
+                        f"{g.get('reason') or 'This game is blacklisted.'}"
+                        for g in blocked
+                    )
+                )
+            if already_installed:
+                lines.append(
+                    "### Already installed\n"
+                    + "\n".join(f"• **{g.get('name', 'Unknown game')}**" for g in already_installed)
+                )
+            if not lines:
+                lines.append("No changes were required; the selected games are already handled.")
+
+            all_resolved = len(self.resolved_indices) >= len(self.games)
+            if all_resolved:
+                lines.append("\n**✓ All detected games are resolved.** This private panel will now close.")
+
+            result_embed = panel(
+                "Selection updated",
+                "\n\n".join(lines),
+                color=SUCCESS if added else WARNING,
+                footer="Private game selection",
+            )
+
+            # The response was deferred above, so use followup.send(), NOT
+            # interaction.response.send_message(). The latter can only be called once.
+            await interaction.followup.send(embed=result_embed, ephemeral=True)
+
+            if all_resolved:
+                self.stop()
+                # Delete the actual private analysis/selection message only after the
+                # queue update and user feedback have succeeded.
+                await _delete_message(interaction.message)
+            else:
+                # Keep the panel usable for remaining selections.
+                try:
+                    await interaction.message.edit(view=self)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+
+        except Exception as exc:
+            log(
+                f"Game selection processing error | user={interaction.user.id} | "
+                f"{type(exc).__name__}: {exc}"
+            )
+            error_embed = error(
+                "❌ Game selection failed",
+                "The queue update could not be completed. The selection panel may be retried.",
+                footer="Private game selection",
+            )
+            try:
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as followup_exc:
+                log(
+                    f"Game selection error feedback failed | user={interaction.user.id} | "
+                    f"{type(followup_exc).__name__}: {followup_exc}"
+                )
 
     async def on_timeout(self):
         self.stop()
@@ -336,43 +406,29 @@ class OnMessage(commands.Cog):
             embed = warning("🎮 Game not identified", result.get("message", "I couldn't identify a supported game."), footer="Game analysis • no sufficiently strong match")
             if captured_input:
                 embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-            embed.add_field(name="Accuracy note", value="⚠️ **This bot is not 100% perfect.** Review results before adding anything to the queue.", inline=False)
+            embed.add_field(name="Accuracy note", value="Only sufficiently strong title/platform matches are shown. Unresolved candidates are excluded from the queue.", inline=False)
             return embed
 
-        title = "🎮 Games identified" if not unresolved else "🎮 Games identified · Some unresolved"
-        embed = panel(title, f"Found **{len(games)}** verified game(s). Review the matches below, then select what you want in the massive library queue.", color=SUCCESS if games else WARNING, footer="Private analysis • selection expires after 24h or when resolved")
+        title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
+        description = "Found **%d** verified game(s). Select which game(s) should be sent to the massive library download queue." % len(games)
+        if unresolved:
+            description += "\n\n⚠️ **Not verified and excluded:** " + ", ".join(str(x) for x in unresolved[:12])
+        embed = panel(title, description, color=SUCCESS if games else WARNING, footer="Private game analysis • select only the games you want queued")
         if captured_input:
             embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-        embed.add_field(name="Accuracy note", value="⚠️ **This bot is not 100% perfect.** Always review detected titles. Media/OCR evidence is prioritized; descriptions are supporting context only.", inline=False)
-
-        lines = []
-        for index, game in enumerate(games, start=1):
+        for index, game in enumerate(games[:MAX_SELECTION_GAMES], start=1):
             name = str(game.get("name", "Unknown game"))
-            url = game.get("steam_url") or game.get("kepargamedb_url") or game.get("library_url") or game.get("tgdb_url")
-            shown = f"[{name}]({url})" if url else name
-            state = "Already installed" if normalize_game_name(name) in installed_names else f"{float(game.get('confidence', 0)):.0f}% confidence"
-            selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
+            score = game.get("confidence")
+            score_text = f"{float(score) * 100:.0f}%" if isinstance(score, (int, float)) else "verified"
+            platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
-            platform = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
-            evidence_type = str(game.get("evidence_type") or "unknown")
-            lines.append(f"**{index}. {shown}**\n`{state}` · `{evidence_type}` · {platform}")
-        for start in range(0, len(lines), 10):
-            embed.add_field(name="Detected games" if start == 0 else "More detected games", value="\n\n".join(lines[start:start + 10])[:1024], inline=False)
-
-        evidence = []
-        for index, game in enumerate(games, start=1):
-            reason = str(game.get("reason") or "").strip()
-            if reason:
-                evidence.append(f"**{index}.** {reason}")
-        if evidence:
-            embed.add_field(name="Why these matches", value="\n".join(evidence)[:1024], inline=False)
-
-        if unresolved:
-            unresolved_lines = [f"• **{item.get('name', 'Unknown game')}** — send its direct Steam/KeparDB store page URL + proper name" for item in unresolved]
-            embed.add_field(name="Unresolved matches", value="\n".join(unresolved_lines)[:1024], inline=False)
-        embed.add_field(name="Next step", value="Use the selector below to add verified games to the massive library queue. You can close this private panel at any time.", inline=False)
+            details = f"— **{score_text}** · `{platform}`"
+            if consoles:
+                details += f" → `{consoles}`"
+            evidence = game.get("evidence") or game.get("reason")
+            if evidence:
+                details += f"\n{str(evidence)[:180]}"
+            if normalize_game_name(name) in installed_names:
+                details += "\n✅ Already installed"
+            embed.add_field(name=f"{index}. {name}", value=details[:1024], inline=False)
         return embed
-
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(OnMessage(bot))
