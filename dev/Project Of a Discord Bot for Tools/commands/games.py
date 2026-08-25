@@ -102,14 +102,18 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
+        # Acknowledge immediately. Queue/database work and panel refresh can exceed
+        # Discord's ~3 second initial interaction-response window.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         from processors.game_queue import complete_queue_item
         item = await complete_queue_item(identifier, "downloaded", "Downloaded")
         if item is None:
-            await interaction.response.send_message(f"❌ No queued game matched `{identifier}`.", ephemeral=True)
+            await interaction.followup.send(f"❌ No queued game matched `{identifier}`.", ephemeral=True)
             return
 
         await self._refresh_panel()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=success("Download queue updated", f"**{item['name']}** was marked as downloaded and removed from the queue."),
             ephemeral=True,
         )
@@ -121,16 +125,20 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
+        # Acknowledge immediately. remove_queue_item() and refresh_queue_panel()
+        # may perform slow database/Discord operations.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         item = await remove_queue_item(identifier, reason or "")
         if item is None:
-            await interaction.response.send_message(f"❌ No queued game matched `{identifier}`.", ephemeral=True)
+            await interaction.followup.send(f"❌ No queued game matched `{identifier}`.", ephemeral=True)
             return
 
         await self._refresh_panel()
         text = f"**{item['name']}** was removed from the download queue."
         if reason:
             text += f"\n\n**Reason:** {reason}"
-        await interaction.response.send_message(embed=success("Queue item removed", text), ephemeral=True)
+        await interaction.followup.send(embed=success("Queue item removed", text), ephemeral=True)
 
     @app_commands.command(name="blacklist", description="Blacklist a game so users cannot request it.")
     @app_commands.describe(identifier="Queue ID or game name", reason="Why this game is blacklisted")
@@ -139,13 +147,16 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
+        # Acknowledge immediately before any potentially slow queue/database work.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         record = await blacklist_game(identifier, reason)
         if record is None:
-            await interaction.response.send_message(f"❌ Could not blacklist `{identifier}`.", ephemeral=True)
+            await interaction.followup.send(f"❌ Could not blacklist `{identifier}`.", ephemeral=True)
             return
 
         await self._refresh_panel()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=warning("Game blacklisted", f"**{record['name']}** is now blacklisted.\n\n**Reason:** {reason}"),
             ephemeral=True,
         )
