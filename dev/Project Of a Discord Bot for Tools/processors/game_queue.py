@@ -46,7 +46,6 @@ async def _resolve_download_info(game: dict) -> dict:
     """Resolve queue download data exclusively from the local JSON sources."""
     name = str(game.get("name", "")).strip()
     match = await find_download_source(name) if name else None
-    checked_at = datetime.now(timezone.utc).isoformat()
 
     if match is None:
         return {
@@ -57,7 +56,6 @@ async def _resolve_download_info(game: dict) -> dict:
             "file_size": None,
             "upload_date": None,
             "download_source_status": "not_found",
-            "download_source_checked_at": checked_at,
         }
 
     return {
@@ -70,15 +68,24 @@ async def _resolve_download_info(game: dict) -> dict:
         "file_size": match.file_size,
         "upload_date": match.upload_date,
         "download_source_status": "matched",
-        "download_source_checked_at": checked_at,
     }
 
 
 async def _apply_download_info(item: dict) -> bool:
-    """Refresh a queue item's JSON-source metadata and report whether it changed."""
+    """Refresh JSON-source metadata and report whether persisted data changed."""
     info = await _resolve_download_info(item)
     changed = any(item.get(key) != value for key, value in info.items())
+
+    # Preserve the existing queue/history schema for consumers that still read
+    # library_url/library_source, but make those fields aliases of the JSON
+    # download target. They are never used as a fallback source.
+    legacy = {
+        "library_url": info["download_url"],
+        "library_source": info["download_source"] or "none",
+    }
+    changed = changed or any(item.get(key) != value for key, value in legacy.items())
     item.update(info)
+    item.update(legacy)
     return changed
 
 
@@ -136,6 +143,10 @@ async def add_games(games: list[dict], requester_id: int | None = None, requeste
                 "id": next_id,
                 "name": name,
                 **download_info,
+                # Compatibility aliases now point only at the actual JSON
+                # download target, never at SDB/Kepardb.
+                "library_url": download_info["download_url"],
+                "library_source": download_info["download_source"] or "none",
                 # Keep original analysis metadata for history/debugging. These are
                 # never used as a download-source fallback.
                 "original_library_url": original_library_url,
