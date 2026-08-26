@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import BLACKLIST_FILE, HISTORY_FILE, QUEUE_FILE
-from processors.game_db import find_local_game
+from processors.download_sources import find_download_source
 
 _lock = asyncio.Lock()
 
@@ -42,26 +42,51 @@ def _next_id(queue: list[dict], history: list[dict]) -> int:
     return max(ids, default=0) + 1
 
 
-async def _resolve_queue_url(game: dict) -> tuple[str | None, str | None]:
-    """Prefer sdb.html, otherwise preserve the analyzer's original URL."""
+async def _resolve_download_info(game: dict) -> dict:
+    """Resolve queue download data exclusively from the local JSON sources."""
     name = str(game.get("name", "")).strip()
-    if name:
-        try:
-            sdb_match = await find_local_game(name)
-            if sdb_match and sdb_match.url:
-                return sdb_match.url, "kepardb"
-        except Exception:
-            pass
+    match = await find_download_source(name) if name else None
 
-    original_url = (
-        game.get("original_library_url")
-        or game.get("library_url")
-        or game.get("kepargamedb_url")
-        or game.get("steam_url")
-        or game.get("tgdb_url")
-    )
-    original_source = game.get("original_library_source") or game.get("library_source")
-    return original_url, original_source
+    if match is None:
+        return {
+            "download_url": None,
+            "download_uris": [],
+            "download_source": None,
+            "download_title": None,
+            "file_size": None,
+            "upload_date": None,
+            "download_source_status": "not_found",
+        }
+
+    return {
+        # download_url remains the backwards-compatible primary target.
+        "download_url": match.primary_uri,
+        # Preserve every valid URI from the source entry.
+        "download_uris": list(match.uris),
+        "download_source": match.source,
+        "download_title": match.title,
+        "file_size": match.file_size,
+        "upload_date": match.upload_date,
+        "download_source_status": "matched",
+    }
+
+
+async def _apply_download_info(item: dict) -> bool:
+    """Refresh JSON-source metadata and report whether persisted data changed."""
+    info = await _resolve_download_info(item)
+    changed = any(item.get(key) != value for key, value in info.items())
+
+    # Preserve the existing queue/history schema for consumers that still read
+    # library_url/library_source, but make those fields aliases of the JSON
+    # download target. They are never used as a fallback source.
+    legacy = {
+        "library_url": info["download_url"],
+        "library_source": info["download_source"] or "none",
+    }
+    changed = changed or any(item.get(key) != value for key, value in legacy.items())
+    item.update(info)
+    item.update(legacy)
+    return changed
 
 
 async def list_queue() -> list[dict]:
@@ -69,16 +94,9 @@ async def list_queue() -> list[dict]:
         queue = _load(_path(QUEUE_FILE))
         changed = False
         for item in queue:
-            queue_url, queue_source = await _resolve_queue_url(item)
-            if queue_url and item.get("queue_url") != queue_url:
-                item["queue_url"] = queue_url
-                item["queue_url_source"] = queue_source or "original"
-                item["library_url"] = queue_url
-                item["library_source"] = queue_source or item.get("library_source") or "original"
-                changed = True
-            elif queue_url and item.get("library_url") != queue_url:
-                item["library_url"] = queue_url
-                item["library_source"] = queue_source or item.get("library_source") or "original"
+            # This is intentionally the only queue-level resolver. It never calls
+            # the old SDB/Kepardb URL resolver and does not fall back to an input URL.
+            if await _apply_download_info(item):
                 changed = True
         if changed:
             _save(_path(QUEUE_FILE), queue)
@@ -118,16 +136,19 @@ async def add_games(games: list[dict], requester_id: int | None = None, requeste
             if key in existing:
                 continue
 
+            download_info = await _resolve_download_info({"name": name})
             original_library_url = game.get("library_url")
             original_library_source = game.get("library_source")
-            queue_url, queue_url_source = await _resolve_queue_url(game)
             item = {
                 "id": next_id,
                 "name": name,
-                "queue_url": queue_url,
-                "queue_url_source": queue_url_source or "original",
-                "library_url": queue_url,
-                "library_source": queue_url_source or original_library_source or "original",
+                **download_info,
+                # Compatibility aliases now point only at the actual JSON
+                # download target, never at SDB/Kepardb.
+                "library_url": download_info["download_url"],
+                "library_source": download_info["download_source"] or "none",
+                # Keep original analysis metadata for history/debugging. These are
+                # never used as a download-source fallback.
                 "original_library_url": original_library_url,
                 "original_library_source": original_library_source,
                 "kepargamedb_url": game.get("kepargamedb_url"),

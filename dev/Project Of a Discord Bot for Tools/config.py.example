@@ -54,9 +54,7 @@ THEGAMESDB_LONG_QUERY_MIN_SCORE = 0.58
 STEAM_HIGH_CONFIDENCE_SEQUENCE = 0.93
 STEAM_HIGH_CONFIDENCE_SCORE = 0.62
 
-# External game databases
-KEPAR_DB_URL_PREFIX = "https://kepardb.com"
-SDB_HTML_PATH = "sdb.html"
+# Game metadata / verification database
 THEGAMESDB_API_KEY = ""
 THEGAMESDB_BASE_URL = "https://api.thegamesdb.net"
 THEGAMESDB_TIMEOUT_SECONDS = 25
@@ -98,6 +96,7 @@ QUEUE_FILE = "data/game_download_queue.json"
 HISTORY_FILE = "data/game_download_history.json"
 BLACKLIST_FILE = "data/game_download_blacklist.json"
 QUEUE_PANEL_STATE_FILE = "data/game_queue_panel.json"
+DOWNLOAD_SOURCES_DIR = os.getenv("DOWNLOAD_SOURCES_DIR", "download_sources")
 
 # LAN connection service
 LAN_WEB_HOST = "0.0.0.0"
