@@ -95,17 +95,7 @@ class GameSelectionView(discord.ui.View):
             self.add_item(self.select)
 
     async def select_games(self, interaction: discord.Interaction):
-        """Handle a selection without letting the 3-second Discord interaction window expire.
-
-        add_games() and refresh_queue_panel() can perform database/history/network work and
-        therefore may take longer than Discord's initial interaction-response deadline.
-        Always acknowledge the component interaction immediately, then use the webhook
-        follow-up for the private result. This also lets us delete the private selection
-        panel after the queue has been updated.
-        """
         try:
-            # MUST happen before any potentially slow work. Using defer() prevents
-            # Discord error 10062 (Unknown interaction) caused by the 3-second deadline.
             await interaction.response.defer(ephemeral=True, thinking=True)
         except discord.NotFound as exc:
             log(f"Game selection interaction expired before defer | user={interaction.user.id} | {type(exc).__name__}: {exc}")
@@ -164,18 +154,12 @@ class GameSelectionView(discord.ui.View):
                 color=SUCCESS if added else WARNING,
                 footer="Private game selection",
             )
-
-            # The response was deferred above, so use followup.send(), NOT
-            # interaction.response.send_message(). The latter can only be called once.
             await interaction.followup.send(embed=result_embed, ephemeral=True)
 
             if all_resolved:
                 self.stop()
-                # Delete the actual private analysis/selection message only after the
-                # queue update and user feedback have succeeded.
                 await _delete_message(interaction.message)
             else:
-                # Keep the panel usable for remaining selections.
                 try:
                     await interaction.message.edit(view=self)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -216,7 +200,6 @@ class OnMessage(commands.Cog):
         self.bot = bot
 
     async def _has_game_parser_role(self, user: discord.abc.User) -> bool:
-        """Require the configured role, including when parsing is requested by DM."""
         try:
             if isinstance(user, discord.Member):
                 if user.guild.id != GAME_PARSER_GUILD_ID:
@@ -303,14 +286,20 @@ class OnMessage(commands.Cog):
         for index, game in enumerate(pending, start=1):
             queue_id = game.get("id", index)
             name = str(game.get("name", "Unknown game"))
-            url = game.get("library_url") or game.get("kepargamedb_url") or game.get("steam_url") or game.get("tgdb_url")
-            shown = f"[{name}]({url})" if url else name
-            source = {"kepargamedb": "KeparGameDB", "steam": "Steam", "thegamesdb": "TheGamesDB"}.get(game.get("library_source"), str(game.get("library_source") or "GameDB"))
+            url = game.get("download_url")
+            if url:
+                shown = f"[{name}]({url})"
+            elif game.get("download_type") == "magnet":
+                shown = f"{name} `[Magnet unavailable]`"
+            else:
+                shown = name
+            source = {"kepargamedb": "KeparGameDB", "steam": "Steam", "thegamesdb": "TheGamesDB"}.get(game.get("download_source"), str(game.get("download_source") or "Unknown source"))
             requester = self.requester_text(game)
             selected_platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
             consoles = console_text(game)
             platform_suffix = f"`PC` → `{consoles}`" if game.get("pc_available") and consoles else (f"`{selected_platform}` → `{consoles}`" if consoles else f"`{selected_platform}`")
-            lines.append(f"**#{queue_id} · {shown}**\n`{source}` · {platform_suffix} · requested by {requester}")
+            size_suffix = f" · `{game['file_size']}`" if game.get("file_size") else ""
+            lines.append(f"**#{queue_id} · {shown}**\n`{source}`{size_suffix} · {platform_suffix} · requested by {requester}")
 
         embed = panel(
             QUEUE_PANEL_TITLE,
@@ -397,38 +386,3 @@ class OnMessage(commands.Cog):
                     await private_message.edit(embed=embed, view=None)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     pass
-
-    @classmethod
-    def create_result_embed(cls, result: dict, installed_names: set[str], captured_input: str | None = None) -> discord.Embed:
-        games = result.get("games") or []
-        unresolved = result.get("unresolved_games") or []
-        if not games and result.get("status") not in {"partial", "identified"}:
-            embed = warning("🎮 Game not identified", result.get("message", "I couldn't identify a supported game."), footer="Game analysis • no sufficiently strong match")
-            if captured_input:
-                embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-            embed.add_field(name="Accuracy note", value="Only sufficiently strong title/platform matches are shown. Unresolved candidates are excluded from the queue.", inline=False)
-            return embed
-
-        title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
-        description = "Found **%d** verified game(s). Select which game(s) should be sent to the massive library download queue." % len(games)
-        if unresolved:
-            description += "\n\n⚠️ **Not verified and excluded:** " + ", ".join(str(x) for x in unresolved[:12])
-        embed = panel(title, description, color=SUCCESS if games else WARNING, footer="Private game analysis • select only the games you want queued")
-        if captured_input:
-            embed.add_field(name="Original input", value=f"```{captured_input[:900]}```", inline=False)
-        for index, game in enumerate(games[:MAX_SELECTION_GAMES], start=1):
-            name = str(game.get("name", "Unknown game"))
-            score = game.get("confidence")
-            score_text = f"{float(score) * 100:.0f}%" if isinstance(score, (int, float)) else "verified"
-            platform = str(game.get("selected_platform") or ("PC" if game.get("pc_available") else "Console"))
-            consoles = console_text(game)
-            details = f"— **{score_text}** · `{platform}`"
-            if consoles:
-                details += f" → `{consoles}`"
-            evidence = game.get("evidence") or game.get("reason")
-            if evidence:
-                details += f"\n{str(evidence)[:180]}"
-            if normalize_game_name(name) in installed_names:
-                details += "\n✅ Already installed"
-            embed.add_field(name=f"{index}. {name}", value=details[:1024], inline=False)
-        return embed
