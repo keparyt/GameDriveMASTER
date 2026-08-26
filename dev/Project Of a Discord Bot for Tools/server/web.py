@@ -3,6 +3,8 @@ from pathlib import Path
 
 from aiohttp import web
 
+from processors.magnet_links import get_magnet, render_magnet_page
+
 
 log = logging.getLogger("lan_web")
 
@@ -15,12 +17,11 @@ class LANWebServer:
         self.runner = None
         self.site = None
 
-        # aiohttp Application does not accept access_log. Access logging
-        # is configured on AppRunner below.
         self.app = web.Application()
 
         self.app.router.add_get("/connect/{token}", self.connect)
         self.app.router.add_post("/api/heartbeat/{token}", self.heartbeat)
+        self.app.router.add_get("/magnet/{link_id}", self.magnet)
         self.app.router.add_get("/health", self.health)
 
     @staticmethod
@@ -84,6 +85,28 @@ class LANWebServer:
 
         return web.json_response({"connected": connected})
 
+    async def magnet(self, request: web.Request):
+        link_id = request.match_info["link_id"]
+        client_ip = self.client_ip(request)
+        record = get_magnet(link_id)
+
+        if record is None:
+            log.warning("MAGNET_NOT_FOUND id=%s ip=%s", link_id, client_ip)
+            return web.Response(status=404, text="Magnet link not found.")
+
+        if client_ip == "unknown" or not self.manager.is_allowed_ip(client_ip):
+            log.warning("MAGNET_REJECTED id=%s ip=%s reason=outside_lan", link_id, client_ip)
+            return web.Response(status=403, text="You must be connected to the home LAN.")
+
+        log.info(
+            "MAGNET_VIEW id=%s ip=%s user=%s name=%s",
+            link_id,
+            client_ip,
+            record.get("name") or record.get("title") or "unknown",
+            record.get("source") or "unknown",
+        )
+        return web.Response(text=render_magnet_page(record), content_type="text/html")
+
     async def health(self, request: web.Request):
         log.info("HEALTH ip=%s status=OK", self.client_ip(request))
         return web.json_response({"status": "ok", "service": "home-lan-connection"})
@@ -121,6 +144,7 @@ class LANWebServer:
             log.info("LAN WEB SERVER READY")
             log.info("Listening: http://%s:%s", self.host, self.port)
             log.info("Configured connection URL: %s/connect/<token>", self.manager.bot.lan_base_url.rstrip("/"))
+            log.info("Magnet landing URLs: %s/magnet/<id>", self.manager.bot.lan_base_url.rstrip("/"))
             log.info("Health check URL: http://<LAN-IP>:%s/health", self.port)
             log.info("Waiting for LAN connection requests...")
 
