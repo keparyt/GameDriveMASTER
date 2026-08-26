@@ -28,6 +28,7 @@ from utils.helper import log
 # video frames for the LLM instead of truncating the reel too early.
 from processors import game_media_analyzer as _game_media_analyzer
 from processors.game_detector_patch import _identify_from_evidence as _identify_game_titles
+from events.on_message import OnMessage
 
 _game_media_analyzer._identify_from_evidence = _identify_game_titles
 
@@ -61,7 +62,7 @@ class Bot(commands.Bot):
 
         log("Loading events...")
         await self.load_extension("events.on_ready")
-        await self.load_extension("events.on_message")
+        await self.add_cog(OnMessage(self))
         await self.load_extension("events.dm_game_prompt")
         log("All extensions loaded.")
 
