@@ -1,20 +1,9 @@
-import asyncio
 import difflib
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
-
-from config import KEPAR_DB_URL_PREFIX, SDB_HTML_PATH
 from processors.thegamesdb import verify_game
-from utils.helper import log
 
-DB_FILE = Path(SDB_HTML_PATH)
-_cache: list["GameDBEntry"] = []
-_cache_signature: tuple[int, int] | None = None
-_lock = asyncio.Lock()
 
 _TITLE_ALIASES = {
     "arc 2": "ark 2", "ark ii": "ark 2",
@@ -36,8 +25,8 @@ _TITLE_ALIASES = {
 @dataclass(frozen=True)
 class GameDBEntry:
     name: str
-    url: str
-    source: str = "kepardb"
+    url: str | None
+    source: str = "thegamesdb"
     tgdb_game_id: int | None = None
     selected_platform: str | None = None
     console_platforms: tuple[str, ...] = ()
@@ -54,73 +43,28 @@ def normalize_name(value: str) -> str:
 
 def _match_key(value: str) -> str:
     value = normalize_name(value)
-    return re.sub(r"\b(?:v|ver|version)\s*\d[\w.\-+]*.*$", "", value, flags=re.IGNORECASE).strip()
-
-
-def _resolve_db_url(href: str) -> str:
-    href = href.strip()
-    prefix = KEPAR_DB_URL_PREFIX.rstrip("/")
-    if not href:
-        return ""
-    if href.startswith("//"):
-        href = "https:" + href
-    if re.match(r"^https?://", href, re.IGNORECASE):
-        from urllib.parse import urlsplit, urlunsplit
-        parts, db = urlsplit(href), urlsplit(prefix)
-        return urlunsplit((db.scheme, db.netloc, parts.path, parts.query, parts.fragment))
-    return urljoin(prefix + "/", href.lstrip("/"))
-
-
-async def refresh_game_database(force: bool = False) -> list[GameDBEntry]:
-    global _cache, _cache_signature
-    async with _lock:
-        if not DB_FILE.exists():
-            log(f"GameDB | ERROR: local database file missing: {DB_FILE}")
-            return []
-        stat = DB_FILE.stat()
-        signature = (stat.st_mtime_ns, stat.st_size)
-        if _cache and not force and signature == _cache_signature:
-            return _cache
-        soup = BeautifulSoup(DB_FILE.read_text(encoding="utf-8", errors="replace"), "html.parser")
-        entries, seen_urls = [], set()
-        for item in soup.select(".az-list-item"):
-            for anchor in item.find_all("a", href=True):
-                name = " ".join(anchor.stripped_strings)
-                url = _resolve_db_url(anchor.get("href", ""))
-                if not name or not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                entries.append(GameDBEntry(name=name, url=url))
-        _cache, _cache_signature = entries, signature
-        log(f"GameDB | loaded {len(entries)} game links from {DB_FILE.name}")
-        log(f"GameDB | URL prefix: {KEPAR_DB_URL_PREFIX}")
-        return _cache
+    return re.sub(r"\b(?:v|ver|version|build|b)\s*\d[\w.\-+]*.*$", "", value, flags=re.IGNORECASE).strip()
 
 
 async def find_local_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | None:
-    entries = await refresh_game_database()
-    query = _match_key(game_name)
-    if not query:
-        return None
-    exact = [entry for entry in entries if _match_key(entry.name) == query]
-    if exact:
-        return exact[0]
-    contained = [entry for entry in entries if query in _match_key(entry.name) or _match_key(entry.name) in query]
-    if contained:
-        return min(contained, key=lambda entry: len(_match_key(entry.name)))
-    best = (0.0, None)
-    for entry in entries:
-        ratio = difflib.SequenceMatcher(None, query, _match_key(entry.name)).ratio()
-        if ratio > best[0]:
-            best = (ratio, entry)
-    return best[1] if best[1] is not None and best[0] >= min_fuzzy else None
+    """Compatibility API retained for callers; local SDB lookup has been removed.
+
+    Download-source lookup is handled exclusively by processors.download_sources.
+    This function deliberately returns None instead of reading sdb.html.
+    """
+    return None
 
 
 async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | None:
-    local = await find_local_game(game_name, min_fuzzy)
-    if local:
-        return await _with_platform_metadata(local, game_name)
-    tgdb = await verify_game(game_name)
+    """Resolve title/platform metadata through TheGamesDB only.
+
+    This database is metadata/verification only; it is never used to produce a
+    queue download URL. Actual download targets come from local JSON sources.
+    """
+    query = str(game_name or "").strip()
+    if not _match_key(query):
+        return None
+    tgdb = await verify_game(query)
     if tgdb is None:
         return None
     return GameDBEntry(
@@ -135,6 +79,7 @@ async def find_game(game_name: str, min_fuzzy: float = 0.88) -> GameDBEntry | No
 
 
 async def _with_platform_metadata(entry: GameDBEntry, original_name: str) -> GameDBEntry | None:
+    """Compatibility helper retained for older imports."""
     tgdb = await verify_game(entry.name or original_name)
     if tgdb is None:
         return entry
@@ -159,8 +104,8 @@ async def enrich_games(games: list[dict]) -> list[dict]:
             item.update({
                 "detected_name": original_name,
                 "name": match.name,
-                "kepargamedb_name": match.name if match.source == "kepardb" else None,
-                "kepargamedb_url": match.url if match.source == "kepardb" else None,
+                "kepargamedb_name": None,
+                "kepargamedb_url": None,
                 "library_url": match.url,
                 "library_source": match.source,
                 "verified": True,
