@@ -26,7 +26,10 @@ class LANWebServer:
 
     @staticmethod
     def client_ip(request: web.Request) -> str:
-        return request.remote or "unknown"
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip() or request.remote or "unknown"
+        return request.headers.get("X-Real-IP") or request.remote or "unknown"
 
     async def connect(self, request: web.Request):
         token = request.match_info["token"]
@@ -94,12 +97,13 @@ class LANWebServer:
             log.warning("MAGNET_NOT_FOUND id=%s ip=%s", link_id, client_ip)
             return web.Response(status=404, text="Magnet link not found.")
 
-        if client_ip == "unknown" or not self.manager.is_allowed_ip(client_ip):
-            log.warning("MAGNET_REJECTED id=%s ip=%s reason=outside_lan", link_id, client_ip)
-            return web.Response(status=403, text="You must be connected to the home LAN.")
-
+        # Magnet landing pages are intentionally available directly from the
+        # same LAN-bound web service as the main panel. They do not require a
+        # prior /connect token/session; this keeps Discord links usable when the
+        # user opens them directly from the queue. The service itself is still
+        # bound to the configured LAN listener rather than a public web host.
         log.info(
-            "MAGNET_VIEW id=%s ip=%s user=%s name=%s",
+            "MAGNET_VIEW id=%s ip=%s name=%s source=%s",
             link_id,
             client_ip,
             record.get("name") or record.get("title") or "unknown",
