@@ -6,6 +6,7 @@ from pathlib import Path
 from config import BLACKLIST_FILE, HISTORY_FILE, QUEUE_FILE
 from processors.download_sources import find_download_source
 from processors.magnet_links import build_public_url, register_magnet
+from utils.helper import log
 
 _lock = asyncio.Lock()
 
@@ -74,11 +75,8 @@ async def _resolve_download_info(game: dict) -> dict:
                 title=match.title,
             )
             public_url = build_public_url(magnet_record["id"])
-            log_target = public_url
         except Exception as exc:
-            log_target = None
             public_url = None
-            from utils.helper import log
             log(f"[MagnetLinks] Registration failed for {name!r}: {type(exc).__name__}: {exc}")
 
         return {
