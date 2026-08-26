@@ -98,6 +98,7 @@ QUEUE_FILE = "data/game_download_queue.json"
 HISTORY_FILE = "data/game_download_history.json"
 BLACKLIST_FILE = "data/game_download_blacklist.json"
 QUEUE_PANEL_STATE_FILE = "data/game_queue_panel.json"
+DOWNLOAD_SOURCES_DIR = os.getenv("DOWNLOAD_SOURCES_DIR", "download_sources")
 
 # LAN connection service
 LAN_WEB_HOST = "0.0.0.0"
