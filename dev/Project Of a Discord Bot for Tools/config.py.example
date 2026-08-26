@@ -23,8 +23,6 @@ DM_PARSE_PROMPT_TIMEOUT = 24 * 60 * 60
 MAX_SELECTION_GAMES = 25
 
 # Local AI / Ollama
-# Docker Compose sets OLLAMA_URL to host.docker.internal so the
-# container can use Ollama running on the Windows host.
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "")
@@ -97,6 +95,7 @@ HISTORY_FILE = "data/game_download_history.json"
 BLACKLIST_FILE = "data/game_download_blacklist.json"
 QUEUE_PANEL_STATE_FILE = "data/game_queue_panel.json"
 DOWNLOAD_SOURCES_DIR = os.getenv("DOWNLOAD_SOURCES_DIR", "download_sources")
+MAGNET_LINKS_FILE = os.getenv("MAGNET_LINKS_FILE", "data/magnet_links.json")
 
 # LAN connection service
 LAN_WEB_HOST = "0.0.0.0"
