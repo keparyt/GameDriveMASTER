@@ -5,6 +5,7 @@ from pathlib import Path
 
 from config import BLACKLIST_FILE, HISTORY_FILE, QUEUE_FILE
 from processors.download_sources import find_download_source
+from processors.magnet_links import build_public_url, register_magnet
 
 _lock = asyncio.Lock()
 
@@ -43,7 +44,7 @@ def _next_id(queue: list[dict], history: list[dict]) -> int:
 
 
 async def _resolve_download_info(game: dict) -> dict:
-    """Resolve queue download data exclusively from the local JSON sources."""
+    """Resolve queue download data exclusively from local JSON sources."""
     name = str(game.get("name", "")).strip()
     match = await find_download_source(name) if name else None
 
@@ -55,18 +56,52 @@ async def _resolve_download_info(game: dict) -> dict:
             "download_title": None,
             "file_size": None,
             "upload_date": None,
+            "download_type": None,
+            "magnet_url": None,
             "download_source_status": "not_found",
         }
 
+    uris = list(match.uris)
+    primary_uri = match.primary_uri
+    magnet_uri = next((uri for uri in uris if uri.lower().startswith("magnet:?")), None)
+
+    if magnet_uri:
+        try:
+            magnet_record = register_magnet(
+                magnet_uri,
+                name=name,
+                source=match.source,
+                title=match.title,
+            )
+            public_url = build_public_url(magnet_record["id"])
+            log_target = public_url
+        except Exception as exc:
+            log_target = None
+            public_url = None
+            from utils.helper import log
+            log(f"[MagnetLinks] Registration failed for {name!r}: {type(exc).__name__}: {exc}")
+
+        return {
+            "download_url": public_url,
+            "download_uris": uris,
+            "download_source": match.source,
+            "download_title": match.title,
+            "file_size": match.file_size,
+            "upload_date": match.upload_date,
+            "download_type": "magnet",
+            "magnet_url": magnet_uri,
+            "download_source_status": "matched" if public_url else "matched_magnet_unavailable",
+        }
+
     return {
-        # download_url remains the backwards-compatible primary target.
-        "download_url": match.primary_uri,
-        # Preserve every valid URI from the source entry.
-        "download_uris": list(match.uris),
+        "download_url": primary_uri,
+        "download_uris": uris,
         "download_source": match.source,
         "download_title": match.title,
         "file_size": match.file_size,
         "upload_date": match.upload_date,
+        "download_type": "url" if primary_uri else None,
+        "magnet_url": None,
         "download_source_status": "matched",
     }
 
@@ -76,9 +111,6 @@ async def _apply_download_info(item: dict) -> bool:
     info = await _resolve_download_info(item)
     changed = any(item.get(key) != value for key, value in info.items())
 
-    # Preserve the existing queue/history schema for consumers that still read
-    # library_url/library_source, but make those fields aliases of the JSON
-    # download target. They are never used as a fallback source.
     legacy = {
         "library_url": info["download_url"],
         "library_source": info["download_source"] or "none",
@@ -94,8 +126,6 @@ async def list_queue() -> list[dict]:
         queue = _load(_path(QUEUE_FILE))
         changed = False
         for item in queue:
-            # This is intentionally the only queue-level resolver. It never calls
-            # the old SDB/Kepardb URL resolver and does not fall back to an input URL.
             if await _apply_download_info(item):
                 changed = True
         if changed:
@@ -143,12 +173,8 @@ async def add_games(games: list[dict], requester_id: int | None = None, requeste
                 "id": next_id,
                 "name": name,
                 **download_info,
-                # Compatibility aliases now point only at the actual JSON
-                # download target, never at SDB/Kepardb.
                 "library_url": download_info["download_url"],
                 "library_source": download_info["download_source"] or "none",
-                # Keep original analysis metadata for history/debugging. These are
-                # never used as a download-source fallback.
                 "original_library_url": original_library_url,
                 "original_library_source": original_library_source,
                 "kepargamedb_url": game.get("kepargamedb_url"),
