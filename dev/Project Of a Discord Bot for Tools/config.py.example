@@ -54,9 +54,7 @@ THEGAMESDB_LONG_QUERY_MIN_SCORE = 0.58
 STEAM_HIGH_CONFIDENCE_SEQUENCE = 0.93
 STEAM_HIGH_CONFIDENCE_SCORE = 0.62
 
-# External game databases
-KEPAR_DB_URL_PREFIX = "https://kepardb.com"
-SDB_HTML_PATH = "sdb.html"
+# Game metadata / verification database
 THEGAMESDB_API_KEY = ""
 THEGAMESDB_BASE_URL = "https://api.thegamesdb.net"
 THEGAMESDB_TIMEOUT_SECONDS = 25
