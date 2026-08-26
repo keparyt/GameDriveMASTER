@@ -13,8 +13,6 @@ import config
 from utils.helper import log
 
 
-# Keep the setting optional so existing config.py files continue to boot until
-# DOWNLOAD_SOURCES_DIR is added to them.
 DOWNLOAD_SOURCES_DIR = Path(getattr(config, "DOWNLOAD_SOURCES_DIR", "download_sources"))
 PRIORITY_SOURCE = "onlinefix"
 
@@ -28,10 +26,7 @@ _TITLE_ALIASES = {
     "gary s mod": "garrys mod",
 }
 
-_VERSION_RE = re.compile(
-    r"\b(?:v|ver|version|build|b)\s*[0-9][0-9a-zA-Z._+\-]*\b.*$",
-    re.IGNORECASE,
-)
+_VERSION_RE = re.compile(r"\b(?:v|ver|version|build|b)\s*[0-9][0-9a-zA-Z._+\-]*\b.*$", re.IGNORECASE)
 _FREE_DOWNLOAD_RE = re.compile(r"\bfree\s+(?:pc\s+)?download\b", re.IGNORECASE)
 _TRAILING_METADATA_RE = re.compile(r"\s*(?:\([^()]{0,120}\)|\[[^\[\]]{0,120}\])\s*$")
 
@@ -74,15 +69,11 @@ def _normalize_title(value: str) -> str:
     value = str(value or "").casefold().strip()
     value = _FREE_DOWNLOAD_RE.sub(" ", value)
     value = _VERSION_RE.sub(" ", value)
-
-    # Remove common release metadata at the end without destroying legitimate
-    # subtitles such as "The Witcher 3: Wild Hunt".
     for _ in range(3):
         cleaned = _TRAILING_METADATA_RE.sub("", value).strip()
         if cleaned == value:
             break
         value = cleaned
-
     value = value.replace("&", " and ")
     value = re.sub(r"[™®©]", "", value)
     value = re.sub(r"[^a-z0-9]+", " ", value)
@@ -119,8 +110,7 @@ def _parse_upload_date(value: str | None) -> datetime:
     if not value:
         return datetime.min.replace(tzinfo=timezone.utc)
     try:
-        normalized = value.strip().replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
@@ -134,14 +124,12 @@ def _entry_from_json(source_name: str, source_file: Path, value: object) -> Down
     title = str(value.get("title") or "").strip()
     if not title or not _normalize_title(title):
         return None
-
     raw_uris = value.get("uris")
     if isinstance(raw_uris, str):
         raw_uris = [raw_uris]
     if not isinstance(raw_uris, list):
         raw_uris = []
     uris = tuple(dict.fromkeys(uri for uri in (_valid_uri(item) for item in raw_uris) if uri))
-
     file_size = value.get("fileSize")
     upload_date = value.get("uploadDate")
     return DownloadSourceEntry(
@@ -168,7 +156,6 @@ def _read_source(path: Path) -> _SourceState | None:
     if not isinstance(payload, dict):
         log(f"[DownloadSources] Ignored {path.name}: root JSON value must be an object")
         return None
-
     source_name = str(payload.get("name") or path.stem).strip() or path.stem
     downloads = payload.get("downloads")
     if not isinstance(downloads, list):
@@ -180,7 +167,6 @@ def _read_source(path: Path) -> _SourceState | None:
         entry = _entry_from_json(source_name, path, raw)
         if entry:
             indexed.append(_IndexedEntry(entry, _title_key(entry.title), _tokens(entry.title)))
-
     return _SourceState(path, source_name, signature, tuple(indexed))
 
 
@@ -204,7 +190,6 @@ async def refresh_sources(force: bool = False) -> None:
                 stat = path.stat()
                 signature = (stat.st_mtime_ns, stat.st_size)
             except OSError:
-                _sources.pop(path, None)
                 continue
 
             cached = _sources.get(path)
@@ -212,11 +197,16 @@ async def refresh_sources(force: bool = False) -> None:
                 continue
 
             state = _read_source(path)
-            if state is not None:
-                _sources[path] = state
-                log(f"[DownloadSources] {state.source_name}: {len(state.entries):,} entries ({path.name})")
-            else:
-                _sources.pop(path, None)
+            if state is None:
+                # Keep the last known-good index if a source is temporarily being
+                # rewritten or becomes malformed. A bad file must not erase a
+                # previously usable source or take the bot offline.
+                if cached:
+                    log(f"[DownloadSources] Keeping previous valid index for {path.name}")
+                continue
+
+            _sources[path] = state
+            log(f"[DownloadSources] {state.source_name}: {len(state.entries):,} entries ({path.name})")
 
         if not _initialized or force:
             log(f"[DownloadSources] Loaded {len(_sources)} sources from {DOWNLOAD_SOURCES_DIR}")
@@ -240,8 +230,6 @@ def _score(query: str, candidate: _IndexedEntry) -> float:
         candidate_overlap = len(query_tokens & candidate.tokens) / max(len(candidate.tokens), 1)
         token_score = (overlap * 0.75) + (candidate_overlap * 0.25)
         base = (sequence * 0.55) + (token_score * 0.45)
-
-    # A usable URI is preferable to a title-only record.
     if candidate.entry.uris:
         base += 0.015
     return min(base, 1.0)
@@ -255,8 +243,6 @@ def _best_in_source(query: str, state: _SourceState) -> tuple[float, _IndexedEnt
             ranked.append((score, candidate))
     if not ranked:
         return None
-
-    # Title match first, then newest upload, then URI availability, then size.
     return max(
         ranked,
         key=lambda pair: (
@@ -273,10 +259,8 @@ async def find_download_source(game_name: str) -> DownloadSourceEntry | None:
     query = str(game_name or "").strip()
     if not _title_key(query):
         return None
-
     await refresh_sources()
     ordered = sorted(_sources.values(), key=lambda state: _priority(state.path))
-
     for state in ordered:
         match = _best_in_source(query, state)
         if match is None:
@@ -289,7 +273,6 @@ async def find_download_source(game_name: str) -> DownloadSourceEntry | None:
             f"uris={len(entry.uris)}"
         )
         return entry
-
     log(f"[DownloadSources] No match | requested={query!r}")
     return None
 
