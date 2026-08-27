@@ -22,12 +22,12 @@ from server.connections import ConnectionManager
 from server.web import LANWebServer
 from utils.helper import log
 
-# Install the enhanced evidence extractor before the game event cog is created.
-# It keeps the existing downloader/OCR/verification pipeline while preventing
-# OCR frame labels from becoming fake game titles and preserving all sampled
-# video frames for the LLM instead of truncating the reel too early.
+# Install the hardened evidence/candidate pipeline before the game event cog is created.
 from processors import game_media_analyzer as _game_media_analyzer
-from processors.game_detector_patch import _identify_from_evidence as _identify_game_titles
+from processors.game_detector_hardening import (
+    _identify_from_evidence as _identify_game_titles,
+    close_http_sessions as _close_game_detector_sessions,
+)
 from events.on_message import OnMessage
 from utils.game_result_embed import create_result_embed as _create_game_result_embed
 
@@ -35,12 +35,7 @@ _game_media_analyzer._identify_from_evidence = _identify_game_titles
 
 
 class GameResultOnMessage(OnMessage):
-    """OnMessage with its shared result renderer explicitly composed in.
-
-    The detector already calls ``self.create_result_embed(...)``. Keep that
-    dependency on the cog instance itself rather than relying on a runtime
-    monkey-patch, while preserving the public Cog name used by /games.
-    """
+    """OnMessage with its shared result renderer explicitly composed in."""
 
     __cog_name__ = "OnMessage"
     create_result_embed = staticmethod(_create_game_result_embed)
@@ -86,6 +81,11 @@ class Bot(commands.Bot):
         log(f"Synced {len(synced)} slash command(s).")
 
     async def close(self):
+        log("Shutting down game detector HTTP clients...")
+        try:
+            await _close_game_detector_sessions()
+        except Exception as exc:
+            log(f"Game detector HTTP cleanup error | {type(exc).__name__}: {exc}")
         log("Shutting down LAN web server...")
         await self.lan_web.stop()
         await super().close()
