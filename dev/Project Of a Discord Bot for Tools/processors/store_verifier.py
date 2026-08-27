@@ -1,3 +1,4 @@
+import asyncio
 import difflib
 import re
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 from utils.helper import log
 
 USER_AGENT = "KeparGameDetector/2.0"
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5, sock_read=10)
 
 
 @dataclass(frozen=True)
@@ -22,8 +24,7 @@ class StoreMatch:
 
 
 def _norm(value: str) -> str:
-    value = str(value or "").casefold()
-    value = value.replace("&", " and ")
+    value = str(value or "").casefold().replace("&", " and ")
     value = re.sub(r"[™®©]", "", value)
     value = re.sub(r"\b(?:demo|trial)\b", "", value)
     value = re.sub(r"\s*[-–—|:]+\s*(?:battle\.net|gog\.com|epic games store).*$", "", value, flags=re.I)
@@ -36,21 +37,18 @@ def _similarity(a: str, b: str) -> float:
 
 
 def _word_similarity(a: str, b: str) -> float:
-    aw = _norm(a).split()
-    bw = _norm(b).split()
+    aw, bw = _norm(a).split(), _norm(b).split()
     if not aw or not bw:
         return 0.0
-    used = set()
-    scores = []
+    used, scores = set(), []
     for word in aw:
-        best = 0.0
-        index = None
+        best, index = 0.0, None
         for i, other in enumerate(bw):
             if i in used:
                 continue
-            s = difflib.SequenceMatcher(None, word, other).ratio()
-            if s > best:
-                best, index = s, i
+            score = difflib.SequenceMatcher(None, word, other).ratio()
+            if score > best:
+                best, index = score, i
         if index is not None:
             used.add(index)
         scores.append(best)
@@ -58,46 +56,33 @@ def _word_similarity(a: str, b: str) -> float:
 
 
 def _credible(query: str, title: str) -> tuple[bool, float, float]:
-    q = _norm(query)
-    t = _norm(title)
+    q, t = _norm(query), _norm(title)
     if not q or not t:
         return False, 0.0, 0.0
     if q == t:
         return True, 1.0, 1.0
-    seq = _similarity(query, title)
-    word = _word_similarity(query, title)
-    # A near-perfect sequence match must not be rejected because punctuation,
-    # apostrophes, or word segmentation lowered the weighted score.
-    # Example: "Frogin' Around" -> "Froggin' Around".
-    accepted = (
-        seq >= 0.94
-        or (seq >= 0.90 and word >= 0.80)
-        or (seq >= 0.86 and word >= 0.90)
-    )
-    return accepted, seq, word
-
-
-async def _get(session: aiohttp.ClientSession, url: str, **kwargs):
-    try:
-        return await session.get(url, timeout=aiohttp.ClientTimeout(total=15), **kwargs)
-    except Exception:
-        return None
+    seq, word = _similarity(query, title), _word_similarity(query, title)
+    return (seq >= 0.94 or (seq >= 0.90 and word >= 0.80) or (seq >= 0.86 and word >= 0.90)), seq, word
 
 
 async def _steam(query: str, session: aiohttp.ClientSession) -> StoreMatch | None:
-    params = {"term": query, "cc": "ca", "l": "english"}
-    response = await _get(session, "https://store.steampowered.com/search/", params=params)
-    if response is None or response.status != 200:
-        return None
     try:
-        html = await response.text()
-    finally:
-        response.release()
-    soup = BeautifulSoup(html, "html.parser")
+        async with session.get(
+            "https://store.steampowered.com/search/",
+            params={"term": query, "cc": "ca", "l": "english"},
+            timeout=REQUEST_TIMEOUT,
+        ) as response:
+            if response.status != 200:
+                log(f"Store verifier | Steam HTTP {response.status} | query={query!r}")
+                return None
+            html = await response.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        log(f"Store verifier | Steam request error | query={query!r} | {type(exc).__name__}: {exc}")
+        return None
+
     ranked = []
-    for row in soup.select("a.search_result_row[data-ds-appid]")[:30]:
-        node = row.select_one(".title")
-        appid = row.get("data-ds-appid")
+    for row in BeautifulSoup(html, "html.parser").select("a.search_result_row[data-ds-appid]")[:30]:
+        node, appid = row.select_one(".title"), row.get("data-ds-appid")
         if not node or not appid or not str(appid).isdigit():
             continue
         title = " ".join(node.stripped_strings).strip()
@@ -111,36 +96,48 @@ async def _steam(query: str, session: aiohttp.ClientSession) -> StoreMatch | Non
 
 
 async def _duckduckgo(query: str, domains: str, session: aiohttp.ClientSession) -> list[tuple[str, str]]:
-    response = await _get(
-        session,
-        "https://html.duckduckgo.com/html/",
-        params={"q": f"site:{domains} {query}"},
-    )
-    if response is None or response.status != 200:
-        return []
-    try:
-        html = await response.text()
-    finally:
-        response.release()
-    soup = BeautifulSoup(html, "html.parser")
-    results = []
-    for result in soup.select(".result")[:10]:
-        anchor = result.select_one("a.result__a")
-        if not anchor:
-            continue
-        href = anchor.get("href", "")
-        title = " ".join(anchor.stripped_strings)
-        if href and title:
-            results.append((title, href))
-    return results
+    """Search DDG with bounded retries and a fully managed response lifecycle."""
+    params = {"q": f"site:{domains} {query}"}
+    for attempt in range(1, 4):
+        try:
+            async with session.get("https://html.duckduckgo.com/html/", params=params, timeout=REQUEST_TIMEOUT) as response:
+                if response.status == 429 or 500 <= response.status < 600:
+                    retry_after = response.headers.get("Retry-After")
+                    log(f"DuckDuckGo | HTTP {response.status} | attempt={attempt} | query={query!r} | retry_after={retry_after or 'not provided'}")
+                    await response.read()
+                    if attempt < 3:
+                        delay = float(retry_after) if retry_after and retry_after.isdigit() else 0.75 * (2 ** (attempt - 1))
+                        await asyncio.sleep(min(delay, 4.0))
+                        continue
+                    return []
+                if response.status != 200:
+                    log(f"DuckDuckGo | HTTP {response.status} | query={query!r}")
+                    await response.read()
+                    return []
+                html = await response.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            log(f"DuckDuckGo | request error | attempt={attempt} | query={query!r} | {type(exc).__name__}: {exc}")
+            if attempt < 3:
+                await asyncio.sleep(min(0.75 * (2 ** (attempt - 1)), 4.0))
+                continue
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
+        results = []
+        for result in soup.select(".result")[:10]:
+            anchor = result.select_one("a.result__a")
+            if not anchor:
+                continue
+            href = anchor.get("href", "")
+            title = " ".join(anchor.stripped_strings)
+            if href and title:
+                results.append((title, href))
+        return results
+    return []
 
 
 async def _search_provider(query: str, provider: str, session: aiohttp.ClientSession) -> StoreMatch | None:
-    domains = {
-        "epic": "store.epicgames.com",
-        "gog": "gog.com",
-        "battle.net": "shop.battle.net",
-    }[provider]
+    domains = {"epic": "store.epicgames.com", "gog": "gog.com", "battle.net": "shop.battle.net"}[provider]
     results = await _duckduckgo(query, domains, session)
     ranked = []
     for title, url in results:
@@ -151,10 +148,8 @@ async def _search_provider(query: str, provider: str, session: aiohttp.ClientSes
             continue
         if provider == "battle.net" and "battle.net" not in host:
             continue
-        # A GOG Dreamlist page means the game is requested on GOG, not sold there.
         if provider == "gog" and "/dreamlist/" in url.lower():
             continue
-
         ok, seq, word = _credible(query, title)
         if not ok:
             path = urlparse(url).path.replace("/", " ").replace("-", " ").replace("_", " ")
@@ -163,7 +158,6 @@ async def _search_provider(query: str, provider: str, session: aiohttp.ClientSes
                 ok, seq, word = True, slug_seq, max(word, slug_seq)
         if ok:
             ranked.append((seq * 0.65 + word * 0.35, seq, word, title, url))
-
     if not ranked:
         return None
     _, seq, word, title, url = max(ranked)
@@ -171,9 +165,9 @@ async def _search_provider(query: str, provider: str, session: aiohttp.ClientSes
 
 
 async def find_store(query: str) -> StoreMatch | None:
-    """Check first-party PC stores independently of TheGamesDB/KeparDB."""
+    """Check first-party PC stores while sharing one managed HTTP session."""
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with aiohttp.ClientSession(headers=headers, timeout=REQUEST_TIMEOUT) as session:
         match = await _steam(query, session)
         if match:
             log(f"Store verifier | Steam accepted | query={query!r} | title={match.title!r} | seq={match.sequence:.3f}")
