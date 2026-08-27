@@ -1,13 +1,20 @@
 import discord
 
+from processors.candidate_filter import confidence_percent
 from utils.embed_style import SUCCESS, WARNING, panel, warning
 
 
 def _normalize_game_name(value: str) -> str:
     import re
 
-    value = re.sub(r"[^a-z0-9]+", " ", value.casefold())
+    value = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _confidence_text(value) -> str:
+    if value is None:
+        return "verified"
+    return f"{confidence_percent(value)}%"
 
 
 def create_result_embed(
@@ -15,97 +22,53 @@ def create_result_embed(
     installed_names: set[str],
     captured_input: str | None = None,
 ) -> discord.Embed:
-    """Build the user-facing game detection result embed.
+    """Render only user-useful detection information.
 
-    Kept outside the Discord event cog so both message-based detection and
-    slash-command analysis share exactly one result-rendering implementation.
+    Internal candidate dictionaries, rejection reasons, source flags and raw
+    OCR are deliberately excluded from this UI. Those belong in backend logs.
     """
     games = result.get("games") or []
     unresolved = result.get("unresolved_games") or []
 
-    if not games and result.get("status") not in {"partial", "identified"}:
+    if not games:
         embed = warning(
-            "🎮 Game not identified",
-            result.get("message", "I couldn't identify a supported game."),
-            footer="Game analysis • no sufficiently strong match",
+            "🎮 No verified games found",
+            "No game title could be identified with enough confidence to add to the download queue.",
+            footer="Game analysis • unverified candidates were excluded",
         )
-        if captured_input:
+        if unresolved:
             embed.add_field(
-                name="Original input",
-                value=f"```{captured_input[:900]}```",
+                name="⚠️ Unresolved",
+                value="Some detected text could not be confidently identified as a game and was excluded.",
                 inline=False,
             )
-        embed.add_field(
-            name="Accuracy note",
-            value=(
-                "Only sufficiently strong title/platform matches are shown. "
-                "Unresolved candidates are excluded from the queue."
-            ),
-            inline=False,
-        )
         return embed
 
-    title = "🎮 Games Identified" if not unresolved else "🎮 Games Identified — Some Unresolved"
-    description = (
-        "Found **%d** verified game(s). Select which game(s) should be sent "
-        "to the massive library download queue."
-        % len(games)
-    )
-    if unresolved:
-        description += (
-            "\n\n⚠️ **Not verified and excluded:** "
-            + ", ".join(str(x) for x in unresolved[:12])
-        )
-
     embed = panel(
-        title,
-        description,
-        color=SUCCESS if games else WARNING,
-        footer="Private game analysis • select only the games you want queued",
+        "🎮 Game Detection Results",
+        f"Found **{len(games)}** verified game{'s' if len(games) != 1 else ''}. Select the games you want to add to the download queue.",
+        color=SUCCESS,
+        footer="Private game analysis • only verified games are selectable",
     )
 
-    if captured_input:
-        embed.add_field(
-            name="Original input",
-            value=f"```{captured_input[:900]}```",
-            inline=False,
-        )
-
+    lines = []
     for index, game in enumerate(games[:25], start=1):
-        name = str(game.get("name", "Unknown game"))
-        score = game.get("confidence")
-        score_text = (
-            f"{float(score) * 100:.0f}%"
-            if isinstance(score, (int, float))
-            else "verified"
-        )
-        platform = str(
-            game.get("selected_platform")
-            or ("PC" if game.get("pc_available") else "Console")
-        )
-        consoles = game.get("console_platforms") or game.get("console_names") or []
-        if isinstance(consoles, str):
-            consoles = [consoles]
-        consoles = ", ".join(
-            dict.fromkeys(
-                str(x).strip() for x in consoles if str(x).strip()
-            )
-        )
+        name = str(game.get("name") or "Unknown game").strip()
+        score = _confidence_text(game.get("confidence"))
+        installed = _normalize_game_name(name) in installed_names
+        status = " · ✅ Already installed" if installed else ""
+        lines.append(f"**{index}. {name}** · `{score}`{status}")
 
-        details = f"— **{score_text}** · `{platform}`"
-        if consoles:
-            details += f" → `{consoles}`"
+    embed.add_field(
+        name="✅ Verified Games",
+        value="\n".join(lines)[:1024],
+        inline=False,
+    )
 
-        evidence = game.get("evidence") or game.get("reason")
-        if evidence:
-            details += f"\n{str(evidence)[:180]}"
-
-        if _normalize_game_name(name) in installed_names:
-            details += "\n✅ Already installed"
-
+    if unresolved:
         embed.add_field(
-            name=f"{index}. {name}",
-            value=details[:1024],
+            name="⚠️ Unresolved",
+            value=f"**{len(unresolved)}** possible match{'es' if len(unresolved) != 1 else ''} ignored because they could not be confidently verified.",
             inline=False,
         )
 
