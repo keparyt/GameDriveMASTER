@@ -19,6 +19,7 @@ PLATFORM_WORDS = {"pc", "playstation", "ps4", "ps5", "ps3", "xbox", "switch", "n
 SENTENCE_WORDS = {"a", "an", "and", "are", "as", "at", "captured", "for", "from", "has", "have", "if", "in", "into", "is", "it", "liked", "new", "of", "on", "that", "the", "these", "this", "to", "was", "were", "when", "while", "with", "you", "your"}
 CONTROL_WORDS = {"press", "hold", "click", "select", "toggle", "drop", "open", "close", "menu", "options", "settings", "inventory", "continue", "loading", "pause", "back", "start", "confirm"}
 GENRE_WORDS = {"action", "adventure", "arcade", "battle", "brawler", "fighting", "fps", "horror", "indie", "multiplayer", "open", "online", "platformer", "puzzle", "rpg", "roguelike", "sandbox", "shooter", "simulation", "singleplayer", "split", "strategy", "survival", "tactical", "world", "co", "coop", "cooperative", "couch"}
+CAPTION_PREFIXES = {"if", "when", "why", "how", "what", "watch", "more", "best", "try", "you", "your"}
 
 
 def normalize_title(value: str) -> str:
@@ -58,18 +59,25 @@ def rejection_reason(value: str) -> str | None:
         return "sentence/description-like candidate"
     if re.fullmatch(r"(?:frame|scene|shot|image|video)[ _#-]*\d+(?:\s*ocr)?", text, re.I):
         return "frame/UI label"
+
     low = normalize_title(text)
     if low in {"primary evidence", "secondary evidence", "last resort evidence", "actual media", "source metadata"}:
         return "internal evidence label"
+
     noise = sum(word in NOISE_WORDS for word in words)
     platforms = sum(word in PLATFORM_WORDS for word in words)
     sentence = sum(word in SENTENCE_WORDS for word in words)
     controls = sum(word in CONTROL_WORDS for word in words)
     genres = sum(word in GENRE_WORDS for word in words)
+
     if platforms >= 2:
         return "platform list/UI text"
     if controls and (len(words) <= 3 or noise >= 2):
         return "control/UI text"
+    if len(words) >= 2 and words[0] in CAPTION_PREFIXES and (len(words) <= 4 or sentence >= 1):
+        return "caption/marketing lead-in"
+    if any(len(word) == 1 for word in words) and len(words) <= 3 and re.search(r"[-–—]", text):
+        return "fragmented OCR token"
     if len(words) >= 3 and noise >= max(2, len(words) // 2):
         return "OCR/UI/marketing noise"
     if len(words) >= 5 and sentence >= 3:
@@ -104,10 +112,6 @@ def _is_partial_duplicate(a: str, b: str) -> bool:
     else:
         short, long = wa, wb
         short_text, long_text = na, nb
-
-    # Only treat a subset as a fragment when the fragment has at least two
-    # meaningful words. This avoids collapsing distinct titles such as "Portal"
-    # and "Portal 2" merely because one token is contained in the other.
     if len(short) >= 2 and short.issubset(long) and len(long - short) <= 2:
         return True
     return similarity(short_text, long_text) >= 0.92
