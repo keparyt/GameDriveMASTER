@@ -29,8 +29,13 @@ from utils.helper import log
 from processors import game_media_analyzer as _game_media_analyzer
 from processors.game_detector_patch import _identify_from_evidence as _identify_game_titles
 from events.on_message import OnMessage
+from utils.game_result_embed import create_result_embed as _create_game_result_embed
 
 _game_media_analyzer._identify_from_evidence = _identify_game_titles
+
+# The result renderer is shared by the event handler and /games analyze.
+# Bind it to OnMessage for compatibility with the existing event call sites.
+OnMessage.create_result_embed = staticmethod(_create_game_result_embed)
 
 logging.basicConfig(
     level=getattr(logging, str(LOG_LEVEL).upper(), logging.INFO),
