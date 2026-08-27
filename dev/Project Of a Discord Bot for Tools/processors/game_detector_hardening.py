@@ -21,15 +21,15 @@ from config import (
     STEAM_LANGUAGE, STEAM_REQUEST_TIMEOUT_SECONDS, STEAM_SEARCH_URL,
     STEAM_USER_AGENT,
 )
-from processors import game_media_analyzer as _base
+from processors import game_media_analyzer as _media
 from processors.candidate_filter import (
     clean_title, confidence_percent, dedupe_candidates, dedupe_verified_games,
     is_plausible_title, normalize_title, rejection_reason,
 )
 from utils.helper import log
 
-_ORIGINAL_IDENTIFY = _base._identify_from_evidence
-_ORIGINAL_VERIFY = _base._verify_and_enrich
+_ORIGINAL_IDENTIFY = _media._identify_from_evidence
+_ORIGINAL_VERIFY = _media._verify_and_enrich
 
 _FRAME_LABEL_RE = re.compile(r"^\s*(?:frame|image|video|scene|shot)\s*[_#-]?\s*\d+(?:\s*ocr)?\s*:?\s*$", re.I)
 _INTERNAL_RE = re.compile(r"^\s*(?:===|primary evidence|secondary evidence|last[- ]resort evidence)\b", re.I)
@@ -37,7 +37,7 @@ _LABEL_PREFIXES = (
     "source title:", "source uploader/account:", "source description/caption:",
     "media item title:", "media item description:", "discord message text/context:",
 )
-_CLEANUP_CACHE: dict[str, tuple[float, str, list[dict]]] = {}
+_CLEANUP_CACHE: dict[str, tuple[float, tuple[str, list[dict]]]] = {}
 _CLEANUP_CACHE_TTL = 600.0
 _STEAM_SESSION: aiohttp.ClientSession | None = None
 _STEAM_SESSION_LOCK = asyncio.Lock()
@@ -164,8 +164,7 @@ async def _steam_prefix_completion(query: str):
     normalized = _norm(query)
     if not normalized or len(normalized) < 3:
         return None
-    key = normalized
-    hit, cached = _cache_get(_STEAM_CACHE, key, _STEAM_CACHE_TTL)
+    hit, cached = _cache_get(_STEAM_CACHE, normalized, _STEAM_CACHE_TTL)
     if hit:
         return cached
     session = await _steam_session()
@@ -178,16 +177,16 @@ async def _steam_prefix_completion(query: str):
             ) as response:
                 if response.status == 429:
                     log(f"Steam title lookup rate limited | query={query!r} | retry_after={response.headers.get('Retry-After', 'unknown')}")
-                    _cache_set(_STEAM_CACHE, key, None)
+                    _cache_set(_STEAM_CACHE, normalized, None)
                     return None
                 if response.status != 200:
                     log(f"Steam title lookup | HTTP {response.status} | query={query!r}")
-                    _cache_set(_STEAM_CACHE, key, None)
+                    _cache_set(_STEAM_CACHE, normalized, None)
                     return None
                 html = await response.text()
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         log(f"Steam title lookup error | query={query!r} | {type(exc).__name__}: {exc}")
-        _cache_set(_STEAM_CACHE, key, None)
+        _cache_set(_STEAM_CACHE, normalized, None)
         return None
 
     ranked = []
@@ -204,14 +203,8 @@ async def _steam_prefix_completion(query: str):
     result = None
     if ranked:
         _, title, appid = min(ranked)
-        result = {
-            "name": title, "steam_appid": appid,
-            "steam_url": f"https://store.steampowered.com/app/{appid}/",
-            "confidence": 1.0,
-            "reason": "exact/prefix Steam title match",
-            "evidence_type": "steam_search", "steam_verified": True,
-        }
-    _cache_set(_STEAM_CACHE, key, result)
+        result = {"name": title, "steam_appid": appid, "steam_url": f"https://store.steampowered.com/app/{appid}/", "confidence": 1.0, "reason": "exact/prefix Steam title match", "evidence_type": "steam_search", "steam_verified": True}
+    _cache_set(_STEAM_CACHE, normalized, result)
     return result
 
 
@@ -234,14 +227,7 @@ Return ONLY JSON: {{"cleaned_evidence":"FRAME 001: ...","game_hints":[{{"name":"
 
 EVIDENCE:
 {compact}'''
-    payload = {
-        "model": OLLAMA_MODEL, "stream": False,
-        "messages": [
-            {"role": "system", "content": "You are a strict OCR cleanup engine for video-game titles. Never invent titles."},
-            {"role": "user", "content": prompt},
-        ],
-        "options": {"temperature": min(float(OLLAMA_TEMPERATURE), 0.10)},
-    }
+    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": "You are a strict OCR cleanup engine for video-game titles. Never invent titles."}, {"role": "user", "content": prompt}], "options": {"temperature": min(float(OLLAMA_TEMPERATURE), 0.10)}}
     try:
         timeout = aiohttp.ClientTimeout(total=min(float(OLLAMA_TIMEOUT_SECONDS), 120.0))
         async with aiohttp.ClientSession(headers={"User-Agent": OLLAMA_USER_AGENT}, timeout=timeout) as session:
@@ -323,6 +309,6 @@ async def _guarded_verify_and_enrich(candidates):
     return verified, unresolved
 
 
-_base._identify_from_evidence = _identify_from_evidence
-_base._verify_and_enrich = _guarded_verify_and_enrich
-_base._steam_prefix_completion = _steam_prefix_completion
+_media._identify_from_evidence = _identify_from_evidence
+_media._verify_and_enrich = _guarded_verify_and_enrich
+_media._steam_prefix_completion = _steam_prefix_completion
