@@ -22,7 +22,7 @@ from server.connections import ConnectionManager
 from server.web import LANWebServer
 from utils.helper import log
 
-# Install the enhanced evidence extractor before events.on_message is loaded.
+# Install the enhanced evidence extractor before the game event cog is created.
 # It keeps the existing downloader/OCR/verification pipeline while preventing
 # OCR frame labels from becoming fake game titles and preserving all sampled
 # video frames for the LLM instead of truncating the reel too early.
@@ -33,9 +33,18 @@ from utils.game_result_embed import create_result_embed as _create_game_result_e
 
 _game_media_analyzer._identify_from_evidence = _identify_game_titles
 
-# The result renderer is shared by the event handler and /games analyze.
-# Bind it to OnMessage for compatibility with the existing event call sites.
-OnMessage.create_result_embed = staticmethod(_create_game_result_embed)
+
+class GameResultOnMessage(OnMessage):
+    """OnMessage with its shared result renderer explicitly composed in.
+
+    The detector already calls ``self.create_result_embed(...)``. Keep that
+    dependency on the cog instance itself rather than relying on a runtime
+    monkey-patch, while preserving the public Cog name used by /games.
+    """
+
+    __cog_name__ = "OnMessage"
+    create_result_embed = staticmethod(_create_game_result_embed)
+
 
 logging.basicConfig(
     level=getattr(logging, str(LOG_LEVEL).upper(), logging.INFO),
@@ -67,7 +76,7 @@ class Bot(commands.Bot):
 
         log("Loading events...")
         await self.load_extension("events.on_ready")
-        await self.add_cog(OnMessage(self))
+        await self.add_cog(GameResultOnMessage(self))
         await self.load_extension("events.dm_game_prompt")
         log("All extensions loaded.")
 
