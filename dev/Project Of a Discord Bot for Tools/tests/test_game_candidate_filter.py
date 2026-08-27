@@ -53,6 +53,10 @@ def test_partial_title_fragments_are_consolidated():
     assert result[0]["name"] == "Brothers - A Tale of Two Sons"
 
 
+def test_legitimate_short_caption_like_title_survives():
+    assert rejection_reason("If Found...") is None
+
+
 def test_confidence_accepts_fraction_or_percent_and_clamps():
     assert confidence_percent(1.0) == 100
     assert confidence_percent(0.96) == 96
