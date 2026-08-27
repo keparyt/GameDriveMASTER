@@ -7,13 +7,12 @@ import re
 from typing import Iterable
 
 NOISE_WORDS = {
-    "all", "are", "best", "button", "caption", "captured", "click", "coming", "continue",
-    "control", "controls", "co", "coop", "cooperative", "couch", "creature", "data", "demo",
-    "description", "descriptions", "download", "drop", "early", "evidence", "free", "game", "games",
-    "gameplay", "highly", "ingame", "liked", "loading", "menu", "more", "new", "online", "options",
-    "pc", "play", "players", "player", "playstation", "press", "price", "promo", "promotional",
-    "recommended", "sale", "screen", "select", "sent", "singleplayer", "steam", "summer", "terminal",
-    "toggle", "trailer", "try", "tutorial", "ui", "unavailable", "watch", "xbox", "youtube",
+    "all", "are", "best", "button", "caption", "captured", "click", "coming", "continue", "control", "controls",
+    "co", "coop", "cooperative", "couch", "creature", "data", "demo", "description", "descriptions", "download",
+    "drop", "early", "evidence", "free", "game", "games", "gameplay", "highly", "ingame", "liked", "loading",
+    "menu", "more", "new", "online", "options", "pc", "play", "players", "player", "playstation", "press",
+    "price", "promo", "promotional", "recommended", "sale", "screen", "select", "sent", "singleplayer", "steam",
+    "summer", "terminal", "toggle", "trailer", "try", "tutorial", "ui", "unavailable", "watch", "xbox", "youtube",
 }
 PLATFORM_WORDS = {"pc", "playstation", "ps4", "ps5", "ps3", "xbox", "switch", "nintendo", "steam", "windows", "mac", "linux"}
 SENTENCE_WORDS = {"a", "an", "and", "are", "as", "at", "captured", "for", "from", "has", "have", "if", "in", "into", "is", "it", "liked", "new", "of", "on", "that", "the", "these", "this", "to", "was", "were", "when", "while", "with", "you", "your"}
@@ -59,17 +58,14 @@ def rejection_reason(value: str) -> str | None:
         return "sentence/description-like candidate"
     if re.fullmatch(r"(?:frame|scene|shot|image|video)[ _#-]*\d+(?:\s*ocr)?", text, re.I):
         return "frame/UI label"
-
     low = normalize_title(text)
     if low in {"primary evidence", "secondary evidence", "last resort evidence", "actual media", "source metadata"}:
         return "internal evidence label"
-
     noise = sum(word in NOISE_WORDS for word in words)
     platforms = sum(word in PLATFORM_WORDS for word in words)
     sentence = sum(word in SENTENCE_WORDS for word in words)
     controls = sum(word in CONTROL_WORDS for word in words)
     genres = sum(word in GENRE_WORDS for word in words)
-
     if platforms >= 2:
         return "platform list/UI text"
     if controls and (len(words) <= 3 or noise >= 2):
@@ -112,6 +108,11 @@ def _is_partial_duplicate(a: str, b: str) -> bool:
     else:
         short, long = wa, wb
         short_text, long_text = na, nb
+    # A one-word fragment is safe to merge only into a clearly longer title;
+    # this avoids collapsing "Portal" into "Portal 2" while merging "Brothers"
+    # into "Brothers - A Tale of Two Sons".
+    if short and short.issubset(long) and len(long) >= 3 and len(long - short) <= 5:
+        return True
     if len(short) >= 2 and short.issubset(long) and len(long - short) <= 2:
         return True
     return similarity(short_text, long_text) >= 0.92
