@@ -1,6 +1,7 @@
 import asyncio
 import difflib
 import re
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlparse
@@ -119,7 +120,6 @@ def _parse_ddg_results(html: str) -> list[tuple[str, str]]:
 
 
 async def _ddg_available() -> bool:
-    global _DDG_OPEN_UNTIL
     async with _DDG_LOCK:
         return time.monotonic() >= _DDG_OPEN_UNTIL
 
@@ -172,8 +172,6 @@ async def _duckduckgo(query: str, domains: str, session: aiohttp.ClientSession) 
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 log(f"DuckDuckGo | request error | attempt={attempt} | endpoint={endpoint} | query={query!r} | {type(exc).__name__}: {exc}")
-                # A timeout is not retried against the same endpoint. The only
-                # fallback is the lightweight endpoint, once, then fail fast.
                 continue
     await _record_ddg_failure()
     log(f"DuckDuckGo | unavailable | query={query!r} | error={last_error!r}")
@@ -209,11 +207,7 @@ async def _search_provider(query: str, provider: str, session: aiohttp.ClientSes
 
 
 async def find_store(query: str, providers=("epic", "gog", "battle.net")) -> StoreMatch | None:
-    """Search first-party stores with strict DDG safeguards.
-
-    The session is managed here and each response is consumed/closed before
-    returning. Web search is intentionally a fallback, not a discovery engine.
-    """
+    """Search first-party stores with strict DDG safeguards."""
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml"}
     connector = aiohttp.TCPConnector(limit=4, limit_per_host=1, ttl_dns_cache=300, enable_cleanup_closed=True)
     async with aiohttp.ClientSession(headers=headers, connector=connector, timeout=REQUEST_TIMEOUT) as session:
