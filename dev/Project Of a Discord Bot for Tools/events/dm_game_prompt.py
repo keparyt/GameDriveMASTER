@@ -38,10 +38,24 @@ class DMParseView(discord.ui.View):
             "Parsing this exact DM for supported games and media. Your next DM will ask again independently.",
             SUCCESS,
         )
-        game_cog = self.cog.bot.get_cog("OnMessage")
+
+        # Do not depend on the Cog's display/registration name. The game
+        # handler can be a subclass whose public Cog name differs, and this
+        # previously made the DM path report "parser unavailable" even though
+        # the handler was actually registered and working.
+        game_cog = next(
+            (
+                cog
+                for cog in self.cog.bot.cogs.values()
+                if callable(getattr(cog, "handle_game_detection", None))
+            ),
+            None,
+        )
+
         if game_cog is None:
             log(f"DM game parser unavailable | message={self.source_message.id}")
             return
+
         try:
             await game_cog.handle_game_detection(self.source_message)
         except Exception as exc:
