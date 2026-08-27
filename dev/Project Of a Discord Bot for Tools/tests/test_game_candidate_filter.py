@@ -10,9 +10,14 @@ from processors.candidate_filter import confidence_percent, dedupe_candidates, r
 
 NOISE = [
     "MORE CO-OP GAMES",
+    "MORE CO OP GAMES",
+    "4 MORE CO-OP GAMES",
     "IF YOULIKED",
+    "IF YOU LIKED",
     "PLAYSTATION/ XBOX /PC",
+    "PLAYSTATION/SWITCH/XBOX/PC",
     "COUCHCO-OP",
+    "COUCH&ONLINECO-OP",
     "ONLINECO-OP",
     "Pro-f",
     "Drop",
@@ -41,7 +46,7 @@ def test_mixed_reel_content_only_keeps_title_shaped_candidates():
     ]]
     result = dedupe_candidates(candidates)
     names = [item["name"] for item in result]
-    assert "Brothers: A TALE OF TWO SONS" in names
+    assert "BROTHERS: A TALE OF TWO SONS" in names
     assert "BREAD & FRED" in names
     assert "LETHAL COMPANY" in names
     assert "MORE CO-OP GAMES" not in names
@@ -49,6 +54,11 @@ def test_mixed_reel_content_only_keeps_title_shaped_candidates():
     assert "PLAYSTATION / XBOX / PC" not in names
     assert "Drop" not in names
     assert "Toggle" not in names
+
+
+def test_combined_sequel_notation_is_expanded():
+    result = dedupe_candidates([{"name": "OVERCOOKED 1 & 2", "confidence": 0.96}])
+    assert [item["name"] for item in result] == ["OVERCOOKED", "OVERCOOKED 2"]
 
 
 def test_real_titles_survive_filtering():
