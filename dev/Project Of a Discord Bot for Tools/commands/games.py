@@ -17,6 +17,25 @@ class Games(commands.GroupCog, group_name="games"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    def _game_parser_cog(self):
+        """Return the registered game parser by capability, not its display name.
+
+        The bot composes the OnMessage cog with a result-rendering subclass, so
+        relying on ``get_cog('OnMessage')`` is brittle. The parser contract is
+        the handle_game_detection/installed_game_names/refresh_queue_panel API,
+        which is what these commands actually require.
+        """
+        return next(
+            (
+                cog
+                for cog in self.bot.cogs.values()
+                if callable(getattr(cog, "handle_game_detection", None))
+                and callable(getattr(cog, "installed_game_names", None))
+                and callable(getattr(cog, "refresh_queue_panel", None))
+            ),
+            None,
+        )
+
     async def _authorized(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.bot.master_id
 
@@ -28,9 +47,9 @@ class Games(commands.GroupCog, group_name="games"):
     async def analyze(self, interaction: discord.Interaction, input: str = "", attachment: discord.Attachment | None = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        cog = self.bot.get_cog("OnMessage")
+        cog = self._game_parser_cog()
         if cog is None:
-            await interaction.edit_original_response(embed=error("Game analyzer unavailable", "The analyzer is not available right now."))
+            await interaction.edit_original_response(embed=error("Game analyzer unavailable", "The game parser Cog is not registered right now."))
             return
 
         class _InteractionMessage:
@@ -102,8 +121,6 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
-        # Acknowledge immediately. Queue/database work and panel refresh can exceed
-        # Discord's ~3 second initial interaction-response window.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         from processors.game_queue import complete_queue_item
@@ -125,8 +142,6 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
-        # Acknowledge immediately. remove_queue_item() and refresh_queue_panel()
-        # may perform slow database/Discord operations.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         item = await remove_queue_item(identifier, reason or "")
@@ -147,7 +162,6 @@ class Games(commands.GroupCog, group_name="games"):
             await interaction.response.send_message("❌ You are not authorized to manage the download queue.", ephemeral=True)
             return
 
-        # Acknowledge immediately before any potentially slow queue/database work.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         record = await blacklist_game(identifier, reason)
@@ -162,7 +176,7 @@ class Games(commands.GroupCog, group_name="games"):
         )
 
     async def _refresh_panel(self):
-        cog = self.bot.get_cog("OnMessage")
+        cog = self._game_parser_cog()
         if cog is not None:
             await cog.refresh_queue_panel()
 
