@@ -70,9 +70,6 @@ def rejection_reason(value: str) -> str | None:
         return "platform list/UI text"
     if controls and (len(words) <= 3 or noise >= 2):
         return "control/UI text"
-    # Caption lead-ins are rejected only when the following words also look
-    # like recommendation/promotion copy. This keeps legitimate titles such as
-    # "If Found..." from being discarded.
     if len(words) >= 2 and words[0] in CAPTION_PREFIXES:
         tail = words[1:]
         if any(word in NOISE_WORDS for word in tail) or any(word.startswith("you") for word in tail):
@@ -113,6 +110,12 @@ def _is_partial_duplicate(a: str, b: str) -> bool:
     else:
         short, long = wa, wb
         short_text, long_text = na, nb
+
+    # Do not collapse numbered sequels into their base title.
+    if (short_text and re.fullmatch(r".+\s+\d+", long_text) and
+            normalize_title(long_text).startswith(normalize_title(short_text) + " ")):
+        return False
+
     if short and short.issubset(long) and len(long) >= 3 and len(long - short) <= 5:
         return True
     if len(short) >= 2 and short.issubset(long) and len(long - short) <= 2:
