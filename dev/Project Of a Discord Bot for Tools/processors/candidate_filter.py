@@ -70,8 +70,13 @@ def rejection_reason(value: str) -> str | None:
         return "platform list/UI text"
     if controls and (len(words) <= 3 or noise >= 2):
         return "control/UI text"
-    if len(words) >= 2 and words[0] in CAPTION_PREFIXES and (len(words) <= 4 or sentence >= 1):
-        return "caption/marketing lead-in"
+    # Caption lead-ins are rejected only when the following words also look
+    # like recommendation/promotion copy. This keeps legitimate titles such as
+    # "If Found..." from being discarded.
+    if len(words) >= 2 and words[0] in CAPTION_PREFIXES:
+        tail = words[1:]
+        if any(word in NOISE_WORDS for word in tail) or any(word.startswith("you") for word in tail):
+            return "caption/marketing lead-in"
     if any(len(word) == 1 for word in words) and len(words) <= 3 and re.search(r"[-–—]", text):
         return "fragmented OCR token"
     if len(words) >= 3 and noise >= max(2, len(words) // 2):
@@ -108,7 +113,6 @@ def _is_partial_duplicate(a: str, b: str) -> bool:
     else:
         short, long = wa, wb
         short_text, long_text = na, nb
-    # One-word OCR fragments are merged only into clearly longer titles.
     if short and short.issubset(long) and len(long) >= 3 and len(long - short) <= 5:
         return True
     if len(short) >= 2 and short.issubset(long) and len(long - short) <= 2:
@@ -125,12 +129,7 @@ def _merge_duplicate_into(accepted: list[dict], index: int, item: dict) -> None:
         merged.update(item)
         accepted[index] = merged
     canonical = accepted[index]
-    # A candidate can bridge multiple fragments (Brothers -> A Tale... -> full
-    # title), so remove every other record that is now a duplicate of canonical.
-    accepted[:] = [
-        record for i, record in enumerate(accepted)
-        if i == index or not _is_partial_duplicate(record["name"], canonical["name"])
-    ]
+    accepted[:] = [record for i, record in enumerate(accepted) if i == index or not _is_partial_duplicate(record["name"], canonical["name"])]
 
 
 def dedupe_candidates(candidates: Iterable[dict], max_items: int = 20) -> list[dict]:
