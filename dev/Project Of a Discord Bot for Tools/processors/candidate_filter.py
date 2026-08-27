@@ -1,4 +1,4 @@
-"""Reusable heuristics for filtering noisy OCR before expensive verification."""
+"""Reusable deterministic validation for game-title candidates."""
 from __future__ import annotations
 
 import difflib
@@ -6,19 +6,21 @@ import math
 import re
 from typing import Iterable
 
-NOISE_WORDS = {
-    "all", "are", "best", "button", "caption", "captured", "click", "coming", "continue", "control", "controls",
-    "co", "coop", "cooperative", "couch", "creature", "data", "demo", "description", "descriptions", "download",
-    "drop", "early", "evidence", "free", "game", "games", "gameplay", "highly", "ingame", "liked", "loading",
-    "menu", "more", "new", "online", "options", "pc", "play", "players", "player", "playstation", "press",
-    "price", "promo", "promotional", "recommended", "sale", "screen", "select", "sent", "singleplayer", "steam",
-    "summer", "terminal", "toggle", "trailer", "try", "tutorial", "ui", "unavailable", "watch", "xbox", "youtube",
-}
-PLATFORM_WORDS = {"pc", "playstation", "ps4", "ps5", "ps3", "xbox", "switch", "nintendo", "steam", "windows", "mac", "linux"}
-SENTENCE_WORDS = {"a", "an", "and", "are", "as", "at", "captured", "for", "from", "has", "have", "if", "in", "into", "is", "it", "liked", "new", "of", "on", "that", "the", "these", "this", "to", "was", "were", "when", "while", "with", "you", "your"}
-CONTROL_WORDS = {"press", "hold", "click", "select", "toggle", "drop", "open", "close", "menu", "options", "settings", "inventory", "continue", "loading", "pause", "back", "start", "confirm"}
-GENRE_WORDS = {"action", "adventure", "arcade", "battle", "brawler", "fighting", "fps", "horror", "indie", "multiplayer", "open", "online", "platformer", "puzzle", "rpg", "roguelike", "sandbox", "shooter", "simulation", "singleplayer", "split", "strategy", "survival", "tactical", "world", "co", "coop", "cooperative", "couch"}
-CAPTION_PREFIXES = {"if", "when", "why", "how", "what", "watch", "more", "best", "try", "you", "your"}
+NOISE_WORDS = {"all","are","best","button","caption","captured","click","coming","continue","control","controls","co","coop","cooperative","couch","creature","data","demo","description","descriptions","download","drop","early","evidence","free","game","games","gameplay","highly","ingame","liked","loading","menu","more","new","online","options","pc","play","players","player","playstation","press","price","promo","promotional","recommended","sale","screen","select","sent","singleplayer","steam","summer","terminal","toggle","trailer","try","tutorial","ui","unavailable","watch","xbox","youtube"}
+PLATFORM_WORDS = {"pc","playstation","ps4","ps5","ps3","xbox","switch","nintendo","steam","windows","mac","linux"}
+SENTENCE_WORDS = {"a","an","and","are","as","at","captured","for","from","has","have","if","in","into","is","it","liked","new","of","on","that","the","these","this","to","was","were","when","while","with","you","your"}
+CONTROL_WORDS = {"press","hold","click","select","toggle","drop","open","close","menu","options","settings","inventory","continue","loading","pause","back","start","confirm"}
+GENRE_WORDS = {"action","adventure","arcade","battle","brawler","fighting","fps","horror","indie","multiplayer","open","online","platformer","puzzle","rpg","roguelike","sandbox","shooter","simulation","singleplayer","split","strategy","survival","tactical","world","co","coop","cooperative","couch"}
+CAPTION_PREFIXES = {"if","when","why","how","what","watch","more","best","try","you","your"}
+REJECTION_PATTERNS = (
+    re.compile(r"^more[\s._/-]*(?:co[\s._/-]*op[\s._/-]*)?games?$", re.I),
+    re.compile(r"^\d*[\s._/-]*more[\s._/-]+(?:co[\s._/-]*op[\s._/-]*)?games?$", re.I),
+    re.compile(r"^if[\s._/-]*you[\s._/-]*(?:liked|like|enjoyed|enjoy|love|loved)\b.*$", re.I),
+    re.compile(r"^(?:you|u)[\s._/-]*(?:might|may|should)[\s._/-]+(?:like|love|enjoy).*$", re.I),
+    re.compile(r"^(?:playstation|xbox|nintendo|switch|pc|steam|windows|mac|linux)(?:\s*[/|&,]+\s*(?:playstation|xbox|nintendo|switch|pc|steam|windows|mac|linux))+$", re.I),
+    re.compile(r"^(?:couch|online|local|split[\s-]*screen)[\s._/-]*(?:&|and)?[\s._/-]*(?:online|local|couch)?[\s._/-]*co[\s-]*op(?:erative)?$", re.I),
+    re.compile(r"^(?:single[\s-]*player|multi[\s-]*player|gameplay(?:[\s-]+footage)?|captured[\s-]+in[\s-]*game)$", re.I),
+)
 
 
 def normalize_title(value: str) -> str:
@@ -26,8 +28,7 @@ def normalize_title(value: str) -> str:
     value = re.sub(r"[™®©]", "", value)
     value = re.sub(r"\b(?:\d+\s*)?(?:player|players)\b", "", value)
     value = re.sub(r"\b(?:demo|trial)\b", "", value)
-    value = re.sub(r"[^a-z0-9]+", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value)).strip()
 
 
 def compact_key(value: str) -> str:
@@ -37,6 +38,7 @@ def compact_key(value: str) -> str:
 def clean_title(value: str) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip(" -*•—–:;,\t\r\n")
     text = re.sub(r"^(?:title|game title|game)\s*[:=-]\s*", "", text, flags=re.I)
+    text = re.sub(r"^\s*(?:\d+\s*[.)-]|[#]\s*\d+)\s*", "", text)
     text = re.sub(r"\s*\((?:\d+\s*)?players?\)\s*$", "", text, flags=re.I)
     text = re.sub(r"\s*\[(?:\d+\s*)?players?\]\s*$", "", text, flags=re.I)
     text = re.sub(r"\s+(?:free\s+)?download(?:\s+\([^)]*\))?\s*$", "", text, flags=re.I)
@@ -54,12 +56,14 @@ def rejection_reason(value: str) -> str | None:
         return "empty candidate"
     if len(text) > 90:
         return "too long for a game title"
+    if any(pattern.fullmatch(text) for pattern in REJECTION_PATTERNS):
+        return "UI/marketing/platform metadata"
     if len(words) > 8:
         return "sentence/description-like candidate"
     if re.fullmatch(r"(?:frame|scene|shot|image|video)[ _#-]*\d+(?:\s*ocr)?", text, re.I):
         return "frame/UI label"
     low = normalize_title(text)
-    if low in {"primary evidence", "secondary evidence", "last resort evidence", "actual media", "source metadata"}:
+    if low in {"primary evidence","secondary evidence","last resort evidence","actual media","source metadata","source title","source uploader account"}:
         return "internal evidence label"
     noise = sum(word in NOISE_WORDS for word in words)
     platforms = sum(word in PLATFORM_WORDS for word in words)
@@ -74,8 +78,6 @@ def rejection_reason(value: str) -> str | None:
         tail = words[1:]
         if any(word in NOISE_WORDS for word in tail) or any(word.startswith("you") for word in tail):
             return "caption/marketing lead-in"
-    if any(len(word) == 1 for word in words) and len(words) <= 3 and re.search(r"[-–—]", text):
-        return "fragmented OCR token"
     if len(words) >= 3 and noise >= max(2, len(words) // 2):
         return "OCR/UI/marketing noise"
     if len(words) >= 5 and sentence >= 3:
@@ -84,6 +86,8 @@ def rejection_reason(value: str) -> str | None:
         return "genre/feature description"
     if len(words) == 1 and (words[0] in NOISE_WORDS or words[0] in GENRE_WORDS):
         return "generic single-word candidate"
+    if len(words) <= 3 and any(len(word) <= 1 for word in words):
+        return "fragmented OCR token"
     return None
 
 
@@ -110,12 +114,8 @@ def _is_partial_duplicate(a: str, b: str) -> bool:
     else:
         short, long = wa, wb
         short_text, long_text = na, nb
-
-    # Do not collapse numbered sequels into their base title.
-    if (short_text and re.fullmatch(r".+\s+\d+", long_text) and
-            normalize_title(long_text).startswith(normalize_title(short_text) + " ")):
+    if re.fullmatch(r".+\s+\d+", long_text) and normalize_title(long_text).startswith(normalize_title(short_text) + " "):
         return False
-
     if short and short.issubset(long) and len(long) >= 3 and len(long - short) <= 5:
         return True
     if len(short) >= 2 and short.issubset(long) and len(long - short) <= 2:
@@ -135,24 +135,37 @@ def _merge_duplicate_into(accepted: list[dict], index: int, item: dict) -> None:
     accepted[:] = [record for i, record in enumerate(accepted) if i == index or not _is_partial_duplicate(record["name"], canonical["name"])]
 
 
+def _expand_combined_title(item: dict) -> list[dict]:
+    name = str(item.get("name", "")).strip()
+    match = re.fullmatch(r"(?P<base>.+?)\s+(?P<first>1|one)\s*&\s*(?P<second>2|two)", name, flags=re.I)
+    if not match:
+        return [item]
+    base = match.group("base").strip()
+    first, second = dict(item), dict(item)
+    first["name"], second["name"] = base, f"{base} 2"
+    first["reason"] = second["reason"] = "split combined sequel notation"
+    return [first, second]
+
+
 def dedupe_candidates(candidates: Iterable[dict], max_items: int = 20) -> list[dict]:
     accepted: list[dict] = []
     for original in candidates:
         if not isinstance(original, dict):
             continue
-        raw = str(original.get("name", "")).strip()
-        name = clean_title(raw)
-        reason = rejection_reason(name)
-        if not name or reason:
-            continue
-        item = dict(original)
-        item["name"] = name
-        item.setdefault("detected_name", raw)
-        duplicate_index = next((i for i, existing in enumerate(accepted) if _is_partial_duplicate(name, existing["name"])), None)
-        if duplicate_index is None:
-            accepted.append(item)
-        else:
-            _merge_duplicate_into(accepted, duplicate_index, item)
+        for expanded in _expand_combined_title(original):
+            raw = str(expanded.get("name", "")).strip()
+            name = clean_title(raw)
+            reason = rejection_reason(name)
+            if not name or reason:
+                continue
+            item = dict(expanded)
+            item["name"] = name
+            item.setdefault("detected_name", raw)
+            duplicate_index = next((i for i, existing in enumerate(accepted) if _is_partial_duplicate(name, existing["name"])), None)
+            if duplicate_index is None:
+                accepted.append(item)
+            else:
+                _merge_duplicate_into(accepted, duplicate_index, item)
     return accepted[:max_items]
 
 
