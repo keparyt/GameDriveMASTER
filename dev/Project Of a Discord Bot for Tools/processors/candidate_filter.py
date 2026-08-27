@@ -108,14 +108,29 @@ def _is_partial_duplicate(a: str, b: str) -> bool:
     else:
         short, long = wa, wb
         short_text, long_text = na, nb
-    # A one-word fragment is safe to merge only into a clearly longer title;
-    # this avoids collapsing "Portal" into "Portal 2" while merging "Brothers"
-    # into "Brothers - A Tale of Two Sons".
+    # One-word OCR fragments are merged only into clearly longer titles.
     if short and short.issubset(long) and len(long) >= 3 and len(long - short) <= 5:
         return True
     if len(short) >= 2 and short.issubset(long) and len(long - short) <= 2:
         return True
     return similarity(short_text, long_text) >= 0.92
+
+
+def _merge_duplicate_into(accepted: list[dict], index: int, item: dict) -> None:
+    existing = accepted[index]
+    existing_score = float(existing.get("confidence", 0) or 0)
+    new_score = float(item.get("confidence", 0) or 0)
+    if len(_token_set(item["name"])) > len(_token_set(existing["name"])) or new_score > existing_score:
+        merged = dict(existing)
+        merged.update(item)
+        accepted[index] = merged
+    canonical = accepted[index]
+    # A candidate can bridge multiple fragments (Brothers -> A Tale... -> full
+    # title), so remove every other record that is now a duplicate of canonical.
+    accepted[:] = [
+        record for i, record in enumerate(accepted)
+        if i == index or not _is_partial_duplicate(record["name"], canonical["name"])
+    ]
 
 
 def dedupe_candidates(candidates: Iterable[dict], max_items: int = 20) -> list[dict]:
@@ -134,14 +149,8 @@ def dedupe_candidates(candidates: Iterable[dict], max_items: int = 20) -> list[d
         duplicate_index = next((i for i, existing in enumerate(accepted) if _is_partial_duplicate(name, existing["name"])), None)
         if duplicate_index is None:
             accepted.append(item)
-            continue
-        existing = accepted[duplicate_index]
-        existing_score = float(existing.get("confidence", 0) or 0)
-        new_score = float(item.get("confidence", 0) or 0)
-        if len(_token_set(name)) > len(_token_set(existing["name"])) or new_score > existing_score:
-            merged = dict(existing)
-            merged.update(item)
-            accepted[duplicate_index] = merged
+        else:
+            _merge_duplicate_into(accepted, duplicate_index, item)
     return accepted[:max_items]
 
 
@@ -153,19 +162,13 @@ def dedupe_verified_games(games: Iterable[dict], max_items: int = 20) -> list[di
         name = clean_title(game.get("name", ""))
         if not name:
             continue
-        match_index = next((i for i, existing in enumerate(output) if _is_partial_duplicate(name, existing.get("name", ""))), None)
-        if match_index is None:
-            item = dict(game)
-            item["name"] = name
+        item = dict(game)
+        item["name"] = name
+        duplicate_index = next((i for i, existing in enumerate(output) if _is_partial_duplicate(name, existing.get("name", ""))), None)
+        if duplicate_index is None:
             output.append(item)
-            continue
-        existing = output[match_index]
-        existing_name = str(existing.get("name", ""))
-        if len(_token_set(name)) > len(_token_set(existing_name)):
-            merged = dict(existing)
-            merged.update(game)
-            merged["name"] = name
-            output[match_index] = merged
+        else:
+            _merge_duplicate_into(output, duplicate_index, item)
     return output[:max_items]
 
 
