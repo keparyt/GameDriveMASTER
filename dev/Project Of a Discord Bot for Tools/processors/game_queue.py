@@ -242,6 +242,60 @@ async def remove_queue_item(identifier: str, reason: str = "") -> dict | None:
         return item
 
 
+async def complete_queue_item(
+    identifier: str,
+    action: str = "downloaded",
+    reason: str = "Downloaded",
+) -> dict | None:
+    """Mark a queued game as completed and move it into history.
+
+    ``/games downloaded`` uses this helper so completion follows the same
+    queue -> history lifecycle as other resolved queue actions.
+    """
+    async with _lock:
+        queue = _load(_path(QUEUE_FILE))
+        history = _load(_path(HISTORY_FILE))
+
+        value = identifier.strip()
+        target_index = None
+
+        if value.isdigit():
+            wanted_id = int(value)
+            for index, item in enumerate(queue):
+                try:
+                    if int(item.get("id", -1)) == wanted_id:
+                        target_index = index
+                        break
+                except (TypeError, ValueError):
+                    continue
+        else:
+            wanted = _normalize(value)
+
+            for index, item in enumerate(queue):
+                if _normalize(item.get("name", "")) == wanted:
+                    target_index = index
+                    break
+
+            if target_index is None:
+                for index, item in enumerate(queue):
+                    if wanted in _normalize(item.get("name", "")):
+                        target_index = index
+                        break
+
+        if target_index is None:
+            return None
+
+        item = queue.pop(target_index)
+        item["action"] = action
+        item["reason"] = reason
+        item["resolved_at"] = datetime.now(timezone.utc).isoformat()
+
+        history.append(item)
+        _save(_path(QUEUE_FILE), queue)
+        _save(_path(HISTORY_FILE), history)
+        return item
+
+
 async def blacklist_game(identifier: str, reason: str) -> dict | None:
     async with _lock:
         queue = _load(_path(QUEUE_FILE))
